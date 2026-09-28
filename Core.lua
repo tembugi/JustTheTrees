@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.4.3"
+local VERSION = "0.4.4"
 -- The addon's name as the player sees it: the title on the points row and in chat.
 local ADDON_TITLE = "Simple Talents Forever"
 local TAB_TEXT = "Simple Talents"
