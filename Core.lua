@@ -2,10 +2,9 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.4.4"
--- The addon's name as the player sees it: the title on the points row and in chat.
-local ADDON_TITLE = "Simple Talents Forever"
-local TAB_TEXT = "Simple Talents"
+local VERSION = "0.5.0"
+-- The addon's name as the player sees it: the tab, the title on the points row and chat.
+local ADDON_TITLE = "Just the Trees"
 
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
@@ -79,12 +78,12 @@ local function CleanPlan(plan)
 	return { nodes = nodes }
 end
 
--- Runs on every load. Rebuilds SimpleTalentsForeverDB from the fields the addon uses:
+-- Runs on every load. Rebuilds JustTheTreesDB from the fields the addon uses:
 -- the save format, and per character the Primary (build) and Secondary plans.
 -- Anything else, left by older versions or damaged, is dropped.
 -- A new saved field has to be added here too, or it is dropped on the next load.
 local function NormalizeSaved()
-	local old = SimpleTalentsForeverDB
+	local old = JustTheTreesDB
 	local clean = {
 		format = SAVE_FORMAT,
 		characters = {},
@@ -103,7 +102,7 @@ local function NormalizeSaved()
 			end
 		end
 	end
-	SimpleTalentsForeverDB = clean
+	JustTheTreesDB = clean
 end
 
 local function CharacterKey()
@@ -146,13 +145,13 @@ local function SaveSlot(group, create)
 	if not key then
 		return nil
 	end
-	local record = SimpleTalentsForeverDB.characters[key]
+	local record = JustTheTreesDB.characters[key]
 	if type(record) ~= "table" then
 		if not create then
 			return nil
 		end
 		record = {}
-		SimpleTalentsForeverDB.characters[key] = record
+		JustTheTreesDB.characters[key] = record
 	end
 	local field = group == 2 and "secondary" or "build"
 	if create and type(record[field]) ~= "table" then
@@ -2974,7 +2973,7 @@ local function Install(frame)
 		return
 	end
 
-	frame.calculatorTabID = frame:AddNamedTab(TAB_TEXT)
+	frame.calculatorTabID = frame:AddNamedTab(ADDON_TITLE)
 	local calculatorTab = frame.TabSystem:GetTabButton(frame.calculatorTabID)
 	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab
 	-- is not a spec, so its label is written again, without the lock or checkmark,

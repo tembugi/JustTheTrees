@@ -1,10 +1,10 @@
-# Simple Talents Forever
+# Just the Trees
 
 Rules for this addon. The shared rules are in `../AGENTS.md`.
 
-A mock talent planner in its own "Simple Talents" tab on the talent window: separate mock trees the player fills as if they had max points. Agreed with the user.
+A mock talent planner in its own "Just the Trees" tab on the talent window: separate mock trees the player fills as if they had max points. Agreed with the user.
 
-The name is "Simple Talents Forever" (folder, repo and packages `SimpleTalentsForever`; `ADDON_TITLE` in the code). It is for players who want simplicity and a look that belongs in the game (Classic fans). Until 0.4.1 it was called TalentCalculator.
+The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_TITLE` in the code, also the tab text). It is for players who want simplicity, no extra features, and a look that belongs in the WoW Forever / Classic UI.
 
 ## Never
 
@@ -13,8 +13,8 @@ The name is "Simple Talents Forever" (folder, repo and packages `SimpleTalentsFo
 ## Look and logic
 
 - The look and the working logic are 1:1 with the game's talent window. The look and UX are set; change them only when the user asks.
-- The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Simple Talents Forever" in the game's gold title font in the center of that row, both only on the calculator tab.
-- Chat lines start with "Simple Talents Forever:" in gold.
+- The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Just the Trees" in the game's gold title font in the center of that row, both only on the calculator tab.
+- Chat lines start with "Just the Trees:" in gold.
 - Search marks come from the talent window's own search and use the game's search mark (`TalentButtonSearchIconTemplate`: the icon for each match type, its pulse and its hover text), on talent buttons and on each choice. "Not on your action bar" marks are left out: planned talents are not on the character's bars.
 
 ## Points
@@ -33,6 +33,6 @@ The name is "Simple Talents Forever" (folder, repo and packages `SimpleTalentsFo
 
 - Per character (name-realm), two independent plans: Primary (`build`) and Secondary (`secondary`). They are the calculator's own slots, not the character's spec slots, and not tied to a spec id.
 - Primary is shown first. Unsaved edits are kept per slot for the session.
-- `NormalizeSaved` rebuilds `SimpleTalentsForeverDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
+- `NormalizeSaved` rebuilds `JustTheTreesDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
 - A plan shown on the tree is fitted to it (`FitPlanToTree`): ranks capped at the talent's max, a choice the node no longer has becomes its first one, and points over the budget come off the deepest rows.
 - Own class only.
