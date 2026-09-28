@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.2.1"
+local VERSION = "0.2.2"
 
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
@@ -43,6 +43,56 @@ local function EnsureSaved()
 	if type(TalentCalculatorDB.characters) ~= "table" then
 		TalentCalculatorDB.characters = {}
 	end
+end
+
+-- The saved layout's version. Raise it only when a change stores plans differently,
+-- and convert the older layout in NormalizeSaved. Saves without a format already
+-- use format 1's layout.
+local SAVE_FORMAT = 1
+
+-- A saved plan keeps only its talents: node, ranks and chosen entry.
+local function CleanPlan(plan)
+	if type(plan) ~= "table" or type(plan.nodes) ~= "table" then
+		return nil
+	end
+	local nodes = {}
+	for _, node in ipairs(plan.nodes) do
+		if type(node) == "table" and type(node.nodeID) == "number" and type(node.ranks) == "number" and node.ranks > 0 then
+			nodes[#nodes + 1] = {
+				nodeID = node.nodeID,
+				ranks = node.ranks,
+				entryID = type(node.entryID) == "number" and node.entryID or 0,
+			}
+		end
+	end
+	return { nodes = nodes }
+end
+
+-- Runs on every load. Rebuilds TalentCalculatorDB from the fields the addon uses:
+-- the save format, and per character the Primary (build) and Secondary plans.
+-- Anything else, left by older versions or damaged, is dropped.
+-- A new saved field has to be added here too, or it is dropped on the next load.
+local function NormalizeSaved()
+	local old = TalentCalculatorDB
+	local clean = {
+		format = SAVE_FORMAT,
+		characters = {},
+	}
+	if type(old) == "table" and type(old.characters) == "table" then
+		for key, record in pairs(old.characters) do
+			if type(key) == "string" and key ~= "" and type(record) == "table" then
+				local build = CleanPlan(record.build)
+				local secondary = CleanPlan(record.secondary)
+				if build or secondary then
+					clean.characters[key] = {
+						build = build,
+						secondary = secondary,
+					}
+				end
+			end
+		end
+	end
+	TalentCalculatorDB = clean
 end
 
 local function CharacterKey()
@@ -2894,7 +2944,7 @@ events:RegisterEvent("ADDON_LOADED")
 events:SetScript("OnEvent", function(_, _, name)
 	if name == addonName then
 		ReadEnums()
-		EnsureSaved()
+		NormalizeSaved()
 		TryInstall()
 	elseif name == TALENT_UI then
 		TryInstall()
