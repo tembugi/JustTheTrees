@@ -914,6 +914,22 @@ local function LevelLabel(frame)
 	return display.calculatorLevelText
 end
 
+-- The addon's version on the left end of the points row, mirroring the row's
+-- inset from the right. The row sits 6 below the tree area's top, centered on its tallest part.
+local function VersionLabel(frame)
+	local display = frame.ClassCurrencyDisplay
+	if not display.calculatorVersionText then
+		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
+		text:SetJustifyH("LEFT")
+		text:SetText("v." .. C_AddOns.GetAddOnMetadata(addonName, "Version"))
+		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
+		text:SetPoint("LEFT", frame.BackgroundBorder, "TOPLEFT", 20, -6 - rowHeight / 2)
+		text:Hide()
+		display.calculatorVersionText = text
+	end
+	return display.calculatorVersionText
+end
+
 local function PlanMatchesSaved()
 	local savedRanks = SavedRanks(ns.slot or 1) or {}
 	for nodeID, stored in pairs(ns.ranks) do
@@ -1041,6 +1057,7 @@ local function PaintSpent(frame)
 		levelText:SetText("Level required: " .. LevelForSpent(TotalSpent()))
 		levelText:Show()
 	end
+	VersionLabel(frame):Show()
 	UpdateSaveButton(frame)
 	if not frame.treeHeaders then
 		return
@@ -2410,6 +2427,9 @@ local function ShowRealActions(frame)
 	local display = frame.ClassCurrencyDisplay
 	if display and display.calculatorLevelText then
 		display.calculatorLevelText:Hide()
+	end
+	if display and display.calculatorVersionText then
+		display.calculatorVersionText:Hide()
 	end
 	if frame.calculatorSaveButton then
 		frame.calculatorSaveButton:Hide()
