@@ -1069,7 +1069,13 @@ local function PaintSpent(frame)
 			local spent = 0
 			for nodeID, stored in pairs(ns.ranks) do
 				local structure = ns.structure[nodeID]
-				if structure then
+				local knownTree = ns.treeOf and ns.treeOf[nodeID]
+				if knownTree then
+					-- The same tree the row gates count this talent in.
+					if knownTree == groupID then
+						spent = spent + (stored.ranks or 0)
+					end
+				elseif structure then
 					local counts = false
 					for _, headerGroup in ipairs(structure.groupIDs or {}) do
 						local mapped = ns.groupTree and ns.groupTree[headerGroup]
@@ -2464,6 +2470,10 @@ function BuildGates(frame)
 				gate.GateText = text
 				frame.calculatorGates[index] = gate
 			end
+			-- A reused marker follows its new node, so it is not hidden along with the old one.
+			if gate:GetParent() ~= button then
+				gate:SetParent(button)
+			end
 			gate.calculatorFrame = frame
 			gate.calculatorNodeID = gateInfo.topLeftNodeID
 			gate:ClearAllPoints()
@@ -2559,7 +2569,8 @@ function ChooseEntry(frame, nodeID, entryID)
 	if not ns.structure[nodeID] then
 		RememberFrame(frame)
 	end
-	if not ns.ranks[nodeID] and not CanAddRank(nodeID) then
+	-- A first pick spends a point, so it passes the same checks as a normal click.
+	if not ns.ranks[nodeID] and (not CanAddRank(nodeID) or not SelectionStaysLegal(nodeID, 1)) then
 		return
 	end
 	local unspentBefore = Unspent()
@@ -2772,19 +2783,18 @@ local function EnterCalculator(frame)
 	end
 	EnsureWorkingCopy()
 	enteringCalculator = true
-	local opened, openError = pcall(function()
+	-- An error is reported with its full stack. Returning false sends SetTab back to
+	-- the character's own talents instead of leaving the frame half switched.
+	local opened = xpcall(function()
 		frame.calculatorMode = true
 		HideRealActions(frame)
 		-- Read the live tree once. Rebuilding it on every point is counted as this addon's memory.
 		RememberFrame(frame)
 		ShowPlan(frame)
 		HideRealActions(frame)
-	end)
+	end, CallErrorHandler)
 	enteringCalculator = false
-	if not opened then
-		error(openError)
-	end
-	return true
+	return opened
 end
 
 local restoringTree = false
