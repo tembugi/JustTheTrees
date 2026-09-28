@@ -1,7 +1,10 @@
 local addonName, ns = ...
 
--- The plan's level cap is the client's current cap. One point per level from
--- 10 is the curve that cap uses; a higher currency max from the tree wins.
+-- The plan is a level 60 character: one point per level from 10 through 60.
+local MAX_LEVEL = 60
+local FIRST_TALENT_LEVEL = 10
+local PLAN_BUDGET = MAX_LEVEL - FIRST_TALENT_LEVEL + 1
+
 local TALENT_UI = "Blizzard_PlayerSpells"
 local REQUIRED_EDGE
 local SUFFICIENT_EDGE
@@ -13,24 +16,13 @@ local function ReadEnums()
 	EXCLUSIVE_EDGE = Enum.TraitEdgeType.MutuallyExclusive
 end
 
-local function PlanLevel()
-	if type(GetMaxLevelForPlayerExpansion) == "function" then
-		local level = GetMaxLevelForPlayerExpansion()
-		if type(level) == "number" and level > 0 then
-			return level
-		end
-	end
-	return nil
-end
-
 ns.ranks = {}
 ns.structure = {}
 ns.incoming = {}
-ns.loadedSpecID = nil
 ns.loadedGroup = nil
 ns.specGroup = nil
 ns.planByGroup = {}
-ns.budget = 0
+ns.budget = PLAN_BUDGET
 
 -- Primary and Secondary use this same frame. Calculator behavior runs only
 -- while its own tab is the one selected.
@@ -42,8 +34,8 @@ local function EnsureSaved()
 	if type(TalentCalculatorDB) ~= "table" then
 		TalentCalculatorDB = {}
 	end
-	if TalentCalculatorDB.build == nil then
-		TalentCalculatorDB.build = {}
+	if type(TalentCalculatorDB.characters) ~= "table" then
+		TalentCalculatorDB.characters = {}
 	end
 end
 
@@ -65,55 +57,6 @@ local function CharacterKey()
 	return name .. "-" .. realm
 end
 
-local function CopySavedBuild(source)
-	local copy = {
-		classID = source.classID,
-		specID = source.specID,
-		nodes = {},
-	}
-	if type(source.nodes) == "table" then
-		for index, node in ipairs(source.nodes) do
-			if type(node) == "table" then
-				copy.nodes[index] = {
-					nodeID = node.nodeID,
-					ranks = node.ranks,
-					entryID = node.entryID,
-				}
-			end
-		end
-	end
-	return copy
-end
-
-local function CharacterRecord()
-	EnsureSaved()
-	local key = CharacterKey()
-	if not key then
-		return nil
-	end
-	if type(TalentCalculatorDB.characters) ~= "table" then
-		TalentCalculatorDB.characters = {}
-	end
-	local record = TalentCalculatorDB.characters[key]
-	if type(record) ~= "table" then
-		record = {}
-		TalentCalculatorDB.characters[key] = record
-		-- Copy the old account plan only onto a character of the same class. Never share the live table.
-		if TalentCalculatorDB.migrated == nil then
-			local classID = PlayerUtil and PlayerUtil.GetClassID and PlayerUtil.GetClassID()
-			local legacy = TalentCalculatorDB.build
-			if type(legacy) == "table" and legacy.classID and classID and legacy.classID == classID then
-				record.build = CopySavedBuild(legacy)
-				if type(TalentCalculatorDB.secondary) == "table" and (not TalentCalculatorDB.secondary.classID or TalentCalculatorDB.secondary.classID == classID) then
-					record.secondary = CopySavedBuild(TalentCalculatorDB.secondary)
-				end
-				TalentCalculatorDB.migrated = key
-			end
-		end
-	end
-	return record
-end
-
 local function ActiveSpecGroup()
 	if C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup then
 		local group = C_SpecializationInfo.GetActiveSpecGroup()
@@ -124,57 +67,48 @@ local function ActiveSpecGroup()
 	return 1
 end
 
-local function SpecIDForGroup(group)
-	if group == ActiveSpecGroup() and PlayerUtil and PlayerUtil.GetCurrentSpecID then
-		local specID = PlayerUtil.GetCurrentSpecID()
-		if type(specID) == "number" and specID > 0 then
-			return specID
-		end
-	end
-	if C_SpecializationInfo and C_SpecializationInfo.GetSpecialization and C_SpecializationInfo.GetSpecializationInfo then
-		local index = C_SpecializationInfo.GetSpecialization(false, false, group)
-		if index then
-			local specID = C_SpecializationInfo.GetSpecializationInfo(index, false, false, nil, nil, group)
-			if type(specID) == "number" and specID > 0 then
-				return specID
-			end
-		end
-	end
-	-- The plan can still switch before the client reports that spec's id.
-	return 0
-end
-
-local function SavedBuild()
-	EnsureSaved()
-	if type(TalentCalculatorDB.build) ~= "table" then
-		return nil
-	end
-	return TalentCalculatorDB.build
-end
-
+-- Each character has two saved plans, Primary (1) and Secondary (2). They are
+-- the calculator's own slots, not the character's spec slots.
 local function SaveSlot(group, create)
-	local field = group == 2 and "secondary" or "build"
-	local record = CharacterRecord()
-	if record then
-		if create and type(record[field]) ~= "table" then
-			record[field] = {}
-		end
-		if type(record[field]) == "table" then
-			return record[field]
-		end
+	EnsureSaved()
+	local key = CharacterKey()
+	if not key then
 		return nil
 	end
-	EnsureSaved()
-	if group == 2 then
-		if create and type(TalentCalculatorDB.secondary) ~= "table" then
-			TalentCalculatorDB.secondary = {}
-		end
-		if type(TalentCalculatorDB.secondary) ~= "table" then
+	local record = TalentCalculatorDB.characters[key]
+	if type(record) ~= "table" then
+		if not create then
 			return nil
 		end
-		return TalentCalculatorDB.secondary
+		record = {}
+		TalentCalculatorDB.characters[key] = record
 	end
-	return SavedBuild()
+	local field = group == 2 and "secondary" or "build"
+	if create and type(record[field]) ~= "table" then
+		record[field] = {}
+	end
+	if type(record[field]) ~= "table" then
+		return nil
+	end
+	return record[field]
+end
+
+-- The saved plan's ranks by node, or nil when that slot has never been saved.
+local function SavedRanks(group)
+	local saved = SaveSlot(group, false)
+	if not saved or type(saved.nodes) ~= "table" then
+		return nil
+	end
+	local ranks = {}
+	for _, node in ipairs(saved.nodes) do
+		if type(node) == "table" and type(node.nodeID) == "number" and type(node.ranks) == "number" and node.ranks > 0 then
+			ranks[node.nodeID] = {
+				ranks = node.ranks,
+				entryID = type(node.entryID) == "number" and node.entryID or 0,
+			}
+		end
+	end
+	return ranks
 end
 
 local function ClearRankTable()
@@ -183,25 +117,10 @@ local function ClearRankTable()
 	end
 end
 
-local function LoadSavedRanks(group, classID, specID)
+local function LoadSavedRanks(group)
 	ClearRankTable()
-	local saved = SaveSlot(group, false)
-	if not saved or saved.classID ~= classID then
-		return
-	end
-	if specID ~= 0 and saved.specID ~= 0 and saved.specID ~= nil and saved.specID ~= specID then
-		return
-	end
-	if type(saved.nodes) ~= "table" then
-		return
-	end
-	for _, node in ipairs(saved.nodes) do
-		if type(node) == "table" and type(node.nodeID) == "number" and type(node.ranks) == "number" and node.ranks > 0 then
-			ns.ranks[node.nodeID] = {
-				ranks = node.ranks,
-				entryID = type(node.entryID) == "number" and node.entryID or 0,
-			}
-		end
+	for nodeID, stored in pairs(SavedRanks(group) or {}) do
+		ns.ranks[nodeID] = stored
 	end
 end
 
@@ -733,19 +652,6 @@ local function PlanTreeID(frame, configID)
 	return nil
 end
 
-local function GroupForFrameConfig(frame)
-	local current = frame and frame.GetConfigID and frame:GetConfigID()
-	if not current then
-		return nil
-	end
-	for group = 1, 2 do
-		if ConfigIDForGroup(frame, group) == current then
-			return group
-		end
-	end
-	return nil
-end
-
 -- The tree's gate list is fixed layout data. The frame's own gate widgets are not
 -- read: the game shows those only while the character has not met them.
 local function TreeGates(frame, configID)
@@ -1001,43 +907,13 @@ local function Prune()
 	return removed
 end
 
-local function CurrencyCap(frame)
-	local configID = frame.GetConfigID and frame:GetConfigID()
-	local treeID = frame.GetTalentTreeID and frame:GetTalentTreeID()
-	if not configID or not treeID or not C_Traits.GetTreeCurrencyInfo then
-		return nil
-	end
-	local info = C_Traits.GetTreeCurrencyInfo(configID, treeID, false)
-	local cap = nil
-	if info then
-		for _, currency in ipairs(info) do
-			if currency.maxQuantity and currency.maxQuantity > 0 then
-				cap = math.max(cap or 0, currency.maxQuantity)
-			end
-		end
-	end
-	return cap
-end
-
-local function Level60Budget(frame)
-	local level = PlanLevel()
-	local fromLevels = level and math.max(0, level - 9) or 0
-	local cap = CurrencyCap(frame)
-	if cap and cap > fromLevels then
-		return cap
-	end
-	return fromLevels
-end
-
--- The first point is gained at level 10, then one point each level through the
--- live level cap. Zero points spent does not require level 10.
+-- The first point comes at level 10, then one point each level up to 60.
+-- Zero points spent does not require level 10.
 local function LevelForSpent(spent)
-	spent = math.max(0, spent)
-	local level = PlanLevel()
-	if spent < 1 or not level then
+	if spent < 1 then
 		return 1
 	end
-	return math.min(level, 9 + spent)
+	return math.min(MAX_LEVEL, FIRST_TALENT_LEVEL - 1 + spent)
 end
 
 local function LevelLabel(frame)
@@ -1056,30 +932,8 @@ local function LevelLabel(frame)
 	return display.calculatorLevelText
 end
 
-local function SavedRanksForCurrent()
-	local saved = SaveSlot(ns.specGroup or 1, false)
-	local ranks = {}
-	local classID = PlayerUtil.GetClassID()
-	local specID = SpecIDForGroup(ns.specGroup or 1)
-	if not saved or not classID or saved.classID ~= classID or type(saved.nodes) ~= "table" then
-		return ranks
-	end
-	if specID ~= 0 and saved.specID ~= 0 and saved.specID ~= nil and saved.specID ~= specID then
-		return ranks
-	end
-	for _, node in ipairs(saved.nodes) do
-		if type(node) == "table" and type(node.nodeID) == "number" and type(node.ranks) == "number" and node.ranks > 0 then
-			ranks[node.nodeID] = {
-				ranks = node.ranks,
-				entryID = type(node.entryID) == "number" and node.entryID or 0,
-			}
-		end
-	end
-	return ranks
-end
-
 local function PlanMatchesSaved()
-	local savedRanks = SavedRanksForCurrent()
+	local savedRanks = SavedRanks(ns.specGroup or 1) or {}
 	for nodeID, stored in pairs(ns.ranks) do
 		local ranks = stored.ranks or 0
 		if ranks > 0 then
@@ -1094,16 +948,7 @@ local function PlanMatchesSaved()
 end
 
 local function HasSavedBuild()
-	local saved = SaveSlot(ns.specGroup or 1, false)
-	local classID = PlayerUtil.GetClassID()
-	local specID = SpecIDForGroup(ns.specGroup or 1)
-	if not saved or not classID or saved.classID ~= classID then
-		return false
-	end
-	if specID ~= 0 and saved.specID ~= 0 and saved.specID ~= nil and saved.specID ~= specID then
-		return false
-	end
-	return true
+	return SavedRanks(ns.specGroup or 1) ~= nil
 end
 
 local function UpdateSaveButton(frame)
@@ -2789,7 +2634,7 @@ local function SelectSpecGroup(frame, group)
 		return
 	end
 	ns.specGroup = group
-	EnsureWorkingCopy(frame)
+	EnsureWorkingCopy()
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
 		HideRealActions(frame)
@@ -2872,15 +2717,9 @@ local function SnapshotRanks()
 end
 
 function RememberCurrentPlan()
-	local group = ns.loadedGroup or ns.specGroup
-	if not group or not ns.loadedSpecID then
-		return
+	if ns.loadedGroup then
+		ns.planByGroup[ns.loadedGroup] = SnapshotRanks()
 	end
-	ns.planByGroup[group] = {
-		classID = PlayerUtil.GetClassID(),
-		specID = ns.loadedSpecID,
-		ranks = SnapshotRanks(),
-	}
 end
 
 local function ApplySnapshot(copy)
@@ -2896,48 +2735,32 @@ local function ApplySnapshot(copy)
 	end
 end
 
-function EnsureWorkingCopy(frame)
+-- Puts the selected slot's plan on the calculator: the unsaved edits from this
+-- session if that slot has any, otherwise its saved plan. Primary is the first slot shown.
+function EnsureWorkingCopy()
 	local key = CharacterKey()
 	if key and ns.characterKey ~= key then
 		ns.characterKey = key
 		ns.loadedGroup = nil
-		ns.loadedSpecID = nil
 		ns.specGroup = nil
 		ns.planByGroup = {}
 		ClearRankTable()
 		ns.structure = {}
 		ns.incoming = {}
 	end
-	if not ns.specGroup then
-		ns.specGroup = GroupForFrameConfig(frame) or ActiveSpecGroup()
+	local group = ns.specGroup or 1
+	ns.specGroup = group
+	if ns.loadedGroup == group then
+		return
 	end
-	local group = ns.specGroup
-	local classID = PlayerUtil.GetClassID()
-	local specID = SpecIDForGroup(group)
-	if not specID then
-		specID = 0
-	end
-	if ns.loadedGroup == group and ns.loadedSpecID == specID then
-		return specID
-	end
-	if ns.loadedGroup and ns.loadedGroup ~= group then
-		ns.planByGroup[ns.loadedGroup] = {
-			classID = PlayerUtil.GetClassID(),
-			specID = ns.loadedSpecID,
-			ranks = SnapshotRanks(),
-		}
-	end
-	ns.structure = {}
-	ns.incoming = {}
+	RememberCurrentPlan()
 	local kept = ns.planByGroup[group]
-	if kept and kept.classID == classID and kept.specID == specID and kept.ranks then
-		ApplySnapshot(kept.ranks)
+	if kept then
+		ApplySnapshot(kept)
 	else
-		LoadSavedRanks(group, classID, specID)
+		LoadSavedRanks(group)
 	end
-	ns.loadedSpecID = specID
 	ns.loadedGroup = group
-	return specID
 end
 
 local function EnterCalculator(frame)
@@ -2947,21 +2770,13 @@ local function EnterCalculator(frame)
 	if frame:IsInspecting() then
 		return false
 	end
-	local viewed = GroupForFrameConfig(frame)
-	if viewed then
-		ns.specGroup = viewed
-	end
-	if not EnsureWorkingCopy(frame) then
-		print(addonName .. " could not open the level " .. tostring(PlanLevel()) .. " preview.")
-		return false
-	end
+	EnsureWorkingCopy()
 	enteringCalculator = true
 	local opened, openError = pcall(function()
 		frame.calculatorMode = true
 		HideRealActions(frame)
 		-- Read the live tree once. Rebuilding it on every point is counted as this addon's memory.
 		RememberFrame(frame)
-		ns.budget = Level60Budget(frame)
 		ShowPlan(frame)
 		HideRealActions(frame)
 	end)
@@ -2994,19 +2809,13 @@ local function LeaveCalculator(frame)
 end
 
 local function SaveBuild()
-	local group = ns.specGroup or 1
-	local build = SaveSlot(group, true)
-	local classID = PlayerUtil.GetClassID()
-	local specID = SpecIDForGroup(group)
-	if not build or not classID or specID == nil then
+	local build = SaveSlot(ns.specGroup or 1, true)
+	if not build then
 		return
 	end
-
 	for key in pairs(build) do
 		build[key] = nil
 	end
-	build.classID = classID
-	build.specID = specID
 	local nodes = {}
 	for nodeID, stored in pairs(ns.ranks) do
 		if stored.ranks and stored.ranks > 0 then
@@ -3028,7 +2837,6 @@ end
 
 local function ClearBuild(frame)
 	ClearRankTable()
-	ns.loadedSpecID = SpecIDForGroup(ns.specGroup or 1)
 	ns.loadedGroup = ns.specGroup or 1
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
@@ -3040,13 +2848,10 @@ end
 
 local function LoadSavedPlan(frame)
 	local group = ns.specGroup or 1
-	local classID = PlayerUtil.GetClassID()
-	local specID = SpecIDForGroup(group)
-	if not classID or specID == nil or not HasSavedBuild() then
+	if not HasSavedBuild() then
 		return
 	end
-	LoadSavedRanks(group, classID, specID)
-	ns.loadedSpecID = specID
+	LoadSavedRanks(group)
 	ns.loadedGroup = group
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
