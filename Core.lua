@@ -6,13 +6,11 @@ local TALENT_UI = "Blizzard_PlayerSpells"
 local REQUIRED_EDGE
 local SUFFICIENT_EDGE
 local EXCLUSIVE_EDGE
-local AVAILABLE_CONDITION
 
 local function ReadEnums()
 	REQUIRED_EDGE = Enum.TraitEdgeType.RequiredForAvailability
 	SUFFICIENT_EDGE = Enum.TraitEdgeType.SufficientForAvailability
 	EXCLUSIVE_EDGE = Enum.TraitEdgeType.MutuallyExclusive
-	AVAILABLE_CONDITION = Enum.TraitConditionType.Available
 end
 
 local function PlanLevel()
@@ -528,18 +526,12 @@ local function SameTree(leftID, rightID)
 	return SameComponent(leftID, rightID)
 end
 
+-- posY grows downward on screen (TalentButtonUtil.TranslateNodePositionsToAnchorPositions).
 local function IsAbove(upper, lower)
 	if not upper or not lower or upper.posY == nil or lower.posY == nil then
 		return false
 	end
-	if ns.rowsDownward ~= false then
-		return upper.posY < lower.posY - 0.5
-	end
-	return upper.posY > lower.posY + 0.5
-end
-
-local function SameRow(left, right)
-	return left and right and left.posY ~= nil and right.posY ~= nil and math.abs(left.posY - right.posY) <= 0.5
+	return upper.posY < lower.posY - 0.5
 end
 
 -- A row opens from points on earlier rows of the same tree only. Points on that
@@ -613,7 +605,6 @@ local function RememberNode(info)
 		edges = edges,
 		posX = posX,
 		posY = posY,
-		requiredSpent = previous and previous.requiredSpent or nil,
 	}
 end
 
@@ -755,362 +746,35 @@ local function GroupForFrameConfig(frame)
 	return nil
 end
 
-local function ConditionConfigs(frame)
-	local configID = PlanConfigID(frame)
-	if not configID then
-		return {}
-	end
-	return { configID }
-end
-
-local function SpendAmount(cond)
-	if cond and cond.spentAmountRequired and cond.spentAmountRequired > 0 and (cond.isGate or cond.type == AVAILABLE_CONDITION) then
-		return cond.spentAmountRequired
-	end
-	return nil
-end
-
--- Direction only. The row cost itself is PointsPerRow times the row in that tree.
-local function SpendRequired(condID, configIDs, frame)
-	if not condID or not C_Traits.GetConditionInfo then
-		return nil
-	end
-	for _, configID in ipairs(configIDs) do
-		local amount = SpendAmount(C_Traits.GetConditionInfo(configID, condID))
-		if amount then
-			return amount
-		end
-	end
-	if frame and frame.GetConfigID and frame:GetConfigID() == configIDs[1] and frame.condInfoCache then
-		return SpendAmount(frame.condInfoCache[condID])
-	end
-	return nil
-end
-
-local function LevelBlocksPlan(condID, configIDs)
-	if not condID or not C_Traits.GetConditionInfo then
-		return false
-	end
-	for _, configID in ipairs(configIDs) do
-		local cond = C_Traits.GetConditionInfo(configID, condID)
-		if cond and not cond.isAlwaysMet and cond.isGate and cond.type == AVAILABLE_CONDITION and cond.playerLevel and PlanLevel() and cond.playerLevel > PlanLevel() then
-			return true
-		end
-	end
-	return false
-end
-
-local function AnchorNode(nodeID, configIDs)
-	local structure = ns.structure[nodeID]
-	if structure and structure.posY then
-		return structure
-	end
-	if not C_Traits.GetNodeInfo then
-		return nil
-	end
-	for _, configID in ipairs(configIDs) do
-		local info = C_Traits.GetNodeInfo(configID, nodeID)
-		if info and info.ID and info.ID ~= 0 then
-			return {
-				posX = info.posX,
-				posY = info.posY,
-				groupIDs = info.groupIDs,
-			}
-		end
-	end
-	return nil
-end
-
-local function TreeGates(frame, configIDs)
-	local configID = configIDs and configIDs[1]
+-- The tree's gate list is fixed layout data. The frame's own gate widgets are not
+-- read: the game shows those only while the character has not met them.
+local function TreeGates(frame, configID)
 	local treeID = PlanTreeID(frame, configID)
-	local gates = nil
 	if configID and treeID and C_Traits.GetTreeInfo then
 		local info = C_Traits.GetTreeInfo(configID, treeID)
 		if info and info.gates and info.gates[1] then
-			gates = info.gates
+			return info.gates
 		end
 	end
-	if not gates and frame and frame.GetConfigID and frame:GetConfigID() == configID and frame.GetTreeInfo then
+	if frame and frame.GetConfigID and frame:GetConfigID() == configID and frame.GetTreeInfo then
 		local cached = frame:GetTreeInfo()
 		if cached and cached.gates and cached.gates[1] then
-			gates = cached.gates
+			return cached.gates
 		end
 	end
-	-- The gates drawn for this spec are the same list, even when the config query comes back empty.
-	if frame and frame.GetConfigID and frame:GetConfigID() == configID and frame.gatePool and frame.gatePool.EnumerateActive then
-		local seen = {}
-		local merged = {}
-		local function addGate(gate)
-			if not gate or not gate.topLeftNodeID or not gate.conditionID then
-				return
-			end
-			local key = tostring(gate.topLeftNodeID) .. ":" .. tostring(gate.conditionID)
-			if seen[key] then
-				return
-			end
-			seen[key] = true
-			merged[#merged + 1] = gate
-		end
-		for _, gate in ipairs(gates or {}) do
-			addGate(gate)
-		end
-		for gate in frame.gatePool:EnumerateActive() do
-			local anchor = gate.GetAnchorButton and gate:GetAnchorButton()
-			local cond = gate.condInfo
-			local nodeID = anchor and anchor.GetNodeID and anchor:GetNodeID()
-			if nodeID and cond and cond.condID and cond.spentAmountRequired and cond.spentAmountRequired > 0 then
-				addGate({
-					topLeftNodeID = nodeID,
-					conditionID = cond.condID,
-					spentAmountRequired = cond.spentAmountRequired,
-					traitCurrencyID = cond.traitCurrencyID,
-				})
-			end
-		end
-		if merged[1] then
-			return merged
-		end
-	end
-	return gates
+	return nil
 end
 
-local function RaiseRequired(structure, amount, anchorY, conditionID)
-	if not amount or amount <= 0 then
-		return
-	end
-	local sources = structure.gateSources
-	if not sources then
-		sources = {}
-		structure.gateSources = sources
-	end
-	sources[#sources + 1] = {
-		amount = amount,
-		anchorY = anchorY,
-		conditionID = conditionID,
-	}
-	if not structure.requiredSpent or amount >= structure.requiredSpent then
-		structure.gateConditionID = conditionID
-	end
-	structure.requiredSpent = math.max(structure.requiredSpent or 0, amount)
-end
+-- Row 1 of a tree is open. Every row after it needs POINTS_PER_ROW more points
+-- spent in the rows above it, in that same tree. Only the tree's layout is read,
+-- never the character's talents.
+local POINTS_PER_ROW = 5
 
--- A row gate locks its own row and every lower row in that tree. Deeper rows carry the higher requirement.
-local function ApplySpendGates(frame)
-	local configIDs = ConditionConfigs(frame)
-	BuildComponents(frame, configIDs[1])
-	local keptRequired = {}
-	local keptLevel = {}
-	for nodeID, structure in pairs(ns.structure) do
-		keptRequired[nodeID] = structure.requiredSpent
-		keptLevel[nodeID] = structure.levelBlocked
-		structure.requiredSpent = nil
-		structure.gateConditionID = nil
-		structure.gateSources = nil
-		structure.levelBlocked = false
-	end
+local function ApplyRowRequirements(frame)
+	local configID = PlanConfigID(frame)
+	BuildComponents(frame, configID)
 
-	local found = false
-	for _, structure in pairs(ns.structure) do
-		for _, condID in ipairs(structure.conditionIDs or {}) do
-			if LevelBlocksPlan(condID, configIDs) then
-				found = true
-				structure.levelBlocked = true
-			end
-		end
-	end
-
-	local samples = {}
-	local gates = TreeGates(frame, configIDs)
-	if gates then
-		for _, gate in ipairs(gates) do
-			local required = SpendRequired(gate.conditionID, configIDs, frame)
-			if (not required or required <= 0) and gate.spentAmountRequired and gate.spentAmountRequired > 0 then
-				required = gate.spentAmountRequired
-			end
-			local anchor = AnchorNode(gate.topLeftNodeID, configIDs)
-			if required and anchor and anchor.posY and ns.structure[gate.topLeftNodeID] then
-				local currency = gate.traitCurrencyID
-				if not currency and C_Traits.GetConditionInfo and configIDs[1] then
-					local cond = C_Traits.GetConditionInfo(configIDs[1], gate.conditionID)
-					if cond and cond.traitCurrencyID then
-						currency = cond.traitCurrencyID
-					end
-				end
-				samples[#samples + 1] = {
-					required = required,
-					posY = anchor.posY,
-					anchorID = gate.topLeftNodeID,
-					conditionID = gate.conditionID,
-					currency = currency,
-				}
-			end
-		end
-	end
-
-	-- The larger point total sits on the deeper row. That tells which way the rows run.
-	local downwardVotes, upwardVotes = 0, 0
-	for leftIndex, left in ipairs(samples) do
-		for rightIndex = leftIndex + 1, #samples do
-			local right = samples[rightIndex]
-			if left.required ~= right.required and SameTree(left.anchorID, right.anchorID) then
-				local deeper = left.required > right.required and left or right
-				local shallower = deeper == left and right or left
-				if deeper.posY > shallower.posY then
-					downwardVotes = downwardVotes + 1
-				elseif deeper.posY < shallower.posY then
-					upwardVotes = upwardVotes + 1
-				end
-			end
-		end
-	end
-	local downward = downwardVotes >= upwardVotes
-
-	if #samples > 0 then
-		found = true
-		for _, sample in ipairs(samples) do
-			for nodeID, structure in pairs(ns.structure) do
-				local onOrBelow
-				if downward then
-					onOrBelow = structure.posY and structure.posY >= sample.posY - 0.5
-				else
-					onOrBelow = structure.posY and structure.posY <= sample.posY + 0.5
-				end
-				local covered = SameTree(nodeID, sample.anchorID)
-				local currencyGroup = sample.currency and ns.currencyGroup[sample.currency]
-				local nodeTree = ns.treeOf and ns.treeOf[nodeID]
-				if not covered and currencyGroup and nodeTree ~= nil and nodeTree ~= currencyGroup then
-					currencyGroup = nil
-				end
-				if not covered and currencyGroup then
-					if nodeTree == currencyGroup then
-						covered = true
-					else
-						for _, groupID in ipairs(structure.groupIDs or {}) do
-							if groupID == currencyGroup then
-								covered = true
-								break
-							end
-						end
-						if not covered then
-							for _, groupID in ipairs(ns.currencyGroupsOf[nodeID] or {}) do
-								if groupID == currencyGroup then
-									covered = true
-									break
-								end
-							end
-						end
-					end
-				end
-				if onOrBelow and covered then
-					RaiseRequired(structure, sample.required, sample.posY, sample.conditionID)
-				end
-			end
-		end
-	end
-
-	-- The row's number comes from the tree gate or from a talent in that tree.
-	-- Every talent on the row keeps that number, including one reached only by an arrow.
-	local function Consider(structure, condID)
-		local required = SpendRequired(condID, configIDs, frame)
-		if not required then
-			return
-		end
-		found = true
-		RaiseRequired(structure, required, structure.posY, condID)
-	end
-	for _, structure in pairs(ns.structure) do
-		for _, condID in ipairs(structure.conditionIDs or {}) do
-			Consider(structure, condID)
-		end
-		if C_Traits and C_Traits.GetEntryInfo then
-			for _, entryID in ipairs(structure.entryIDs or {}) do
-				for _, configID in ipairs(configIDs) do
-					local ok, info = pcall(C_Traits.GetEntryInfo, configID, entryID)
-					if ok and type(info) == "table" then
-						for _, condID in ipairs(info.conditionIDs or {}) do
-							Consider(structure, condID)
-						end
-						break
-					end
-				end
-			end
-		end
-	end
-
-	if not found then
-		for nodeID, structure in pairs(ns.structure) do
-			structure.requiredSpent = keptRequired[nodeID]
-			structure.gateSources = nil
-			structure.levelBlocked = keptLevel[nodeID]
-		end
-	end
-	ns.rowsDownward = downward
-
-	-- One total covers the row that states it and every deeper row in that same tree.
-	for nodeID, structure in pairs(ns.structure) do
-		local amount = structure.requiredSpent
-		if amount and amount > 0 then
-			for otherID, other in pairs(ns.structure) do
-				local lower = SameRow(structure, other) or IsAbove(structure, other)
-				if otherID ~= nodeID and SameTree(nodeID, otherID) and lower then
-					if not other.requiredSpent or other.requiredSpent < amount then
-						RaiseRequired(other, amount, structure.posY, structure.gateConditionID)
-					end
-				end
-			end
-		end
-	end
-
-	-- The top row of a tree does not keep a gate that belongs to the rows below it.
-	-- A gate that belongs only to this row stays, so a one-row cluster does not open.
-	-- A total the talent itself lists stays.
-	local deeperByNode = {}
-	local hasAbove = {}
-	for nodeID, structure in pairs(ns.structure) do
-		local deeper = {}
-		for otherID, other in pairs(ns.structure) do
-			if otherID ~= nodeID and other.maxRanks > 0 and SameTree(nodeID, otherID) then
-				if IsAbove(other, structure) then
-					hasAbove[nodeID] = true
-				elseif IsAbove(structure, other) then
-					for _, source in ipairs(other.gateSources or {}) do
-						deeper[source.conditionID] = true
-					end
-				end
-			end
-		end
-		deeperByNode[nodeID] = deeper
-	end
-	for nodeID, structure in pairs(ns.structure) do
-		local sources = structure.gateSources
-		if not hasAbove[nodeID] and sources then
-			local deeper = deeperByNode[nodeID]
-			local keptAmount = 0
-			local keptCondition
-			for _, source in ipairs(sources) do
-				local ownsCondition = false
-				for _, condID in ipairs(structure.conditionIDs or {}) do
-					if condID == source.conditionID then
-						ownsCondition = true
-						break
-					end
-				end
-				if (ownsCondition or not deeper[source.conditionID]) and source.amount > keptAmount then
-					keptAmount = source.amount
-					keptCondition = source.conditionID
-				end
-			end
-			structure.requiredSpent = keptAmount > 0 and keptAmount or nil
-			structure.gateConditionID = keptAmount > 0 and keptCondition or nil
-		end
-		structure.gateSources = nil
-	end
-
-	-- Five points per row in that tree. The first row is free. The client is not asked
-	-- for the number, because its answer already has the character's points removed.
-	local pointsPerRow = 5
-	local downward = ns.rowsDownward ~= false
+	-- One node stands for each tree. Each tree lists its row positions from the top.
 	local reps = {}
 	local function RepOf(nodeID)
 		for _, rep in ipairs(reps) do
@@ -1121,51 +785,58 @@ local function ApplySpendGates(frame)
 		reps[#reps + 1] = nodeID
 		return nodeID
 	end
-	local bandsOf = {}
+	local rowsOf = {}
 	for nodeID, structure in pairs(ns.structure) do
-		if structure.posY and (structure.maxRanks or 0) > 0 then
+		structure.requiredSpent = nil
+		structure.gateConditionID = nil
+		if structure.maxRanks > 0 then
 			local rep = RepOf(nodeID)
-			local bands = bandsOf[rep]
-			if not bands then
-				bands = {}
-				bandsOf[rep] = bands
+			local rows = rowsOf[rep]
+			if not rows then
+				rows = {}
+				rowsOf[rep] = rows
 			end
-			local foundBand = false
-			for _, band in ipairs(bands) do
-				if math.abs(band - structure.posY) <= 0.5 then
-					foundBand = true
+			local known = false
+			for _, rowY in ipairs(rows) do
+				if math.abs(rowY - structure.posY) <= 0.5 then
+					known = true
 					break
 				end
 			end
-			if not foundBand then
-				bands[#bands + 1] = structure.posY
+			if not known then
+				rows[#rows + 1] = structure.posY
 			end
 		end
 	end
-	for _, bands in pairs(bandsOf) do
-		table.sort(bands, function(left, right)
-			if downward then
-				return left < right
-			end
-			return left > right
-		end)
+	for _, rows in pairs(rowsOf) do
+		table.sort(rows)
 	end
 	for nodeID, structure in pairs(ns.structure) do
-		if structure.posY and (structure.maxRanks or 0) > 0 then
-			local bands = bandsOf[RepOf(nodeID)]
-			local index = 1
-			for bandIndex, band in ipairs(bands) do
-				if math.abs(band - structure.posY) <= 0.5 then
-					index = bandIndex
+		if structure.maxRanks > 0 then
+			for index, rowY in ipairs(rowsOf[RepOf(nodeID)]) do
+				if math.abs(rowY - structure.posY) <= 0.5 then
+					if index > 1 then
+						structure.requiredSpent = (index - 1) * POINTS_PER_ROW
+					end
 					break
 				end
 			end
-			local cost = (index - 1) * pointsPerRow
-			if cost > 0 then
-				structure.requiredSpent = cost
-			else
-				structure.requiredSpent = nil
-				structure.gateConditionID = nil
+		end
+	end
+
+	-- The gate tooltip uses the wording of the nearest tree gate on or above that row.
+	local gates = TreeGates(frame, configID)
+	for nodeID, structure in pairs(ns.structure) do
+		if structure.requiredSpent then
+			local nearestY
+			for _, gate in ipairs(gates or {}) do
+				local anchor = ns.structure[gate.topLeftNodeID]
+				if anchor and SameTree(gate.topLeftNodeID, nodeID) and not IsAbove(structure, anchor) then
+					if not nearestY or anchor.posY > nearestY then
+						nearestY = anchor.posY
+						structure.gateConditionID = gate.conditionID
+					end
+				end
 			end
 		end
 	end
@@ -1191,7 +862,7 @@ local function RememberFrame(frame)
 		end
 		if next(ns.structure) then
 			RebuildIncoming()
-			ApplySpendGates(frame)
+			ApplyRowRequirements(frame)
 			return
 		end
 		ns.structure = saved
@@ -1203,7 +874,7 @@ local function RememberFrame(frame)
 		RememberNode(button.GetNodeInfo and button:GetNodeInfo() or button.nodeInfo)
 	end
 	RebuildIncoming()
-	ApplySpendGates(frame)
+	ApplyRowRequirements(frame)
 end
 
 local function SourceRank(nodeID)
@@ -1257,9 +928,6 @@ local function GateOpen(nodeID)
 	local structure = ns.structure[nodeID]
 	if not structure then
 		return true
-	end
-	if structure.levelBlocked then
-		return false
 	end
 	local required = structure.requiredSpent or 0
 	if required > 0 and SpentAbove(nodeID) < required then
@@ -2932,7 +2600,7 @@ function BuildGates(frame)
 		return
 	end
 	frame.calculatorGates = frame.calculatorGates or {}
-	local gates = TreeGates(frame, ConditionConfigs(frame)) or {}
+	local gates = TreeGates(frame, PlanConfigID(frame)) or {}
 	local used = {}
 	for index, gateInfo in ipairs(gates) do
 		local button = nodes[gateInfo.topLeftNodeID]
