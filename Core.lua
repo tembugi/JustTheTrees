@@ -29,7 +29,7 @@ ns.budget = PLAN_BUDGET
 -- Primary and Secondary use this same frame. Calculator behavior runs only
 -- while its own tab is the one selected.
 local function ShowingCalculator(frame)
-	return frame and frame.calculatorMode and frame.calculatorTabID and frame.GetTab and frame:GetTab() == frame.calculatorTabID
+	return frame and frame.calculatorMode and frame.calculatorTabID and frame:GetTab() == frame.calculatorTabID
 end
 
 local function EnsureSaved()
@@ -42,17 +42,11 @@ local function EnsureSaved()
 end
 
 local function CharacterKey()
-	if type(UnitName) ~= "function" then
-		return nil
-	end
 	local name = UnitName("player")
 	if type(name) ~= "string" or name == "" or name == UNKNOWNOBJECT then
 		return nil
 	end
-	local realm
-	if type(GetRealmName) == "function" then
-		realm = GetRealmName()
-	end
+	local realm = GetRealmName()
 	if type(realm) ~= "string" or realm == "" then
 		return name
 	end
@@ -60,11 +54,9 @@ local function CharacterKey()
 end
 
 local function ActiveSpecGroup()
-	if C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup then
-		local group = C_SpecializationInfo.GetActiveSpecGroup()
-		if group == 1 or group == 2 then
-			return group
-		end
+	local group = C_SpecializationInfo.GetActiveSpecGroup()
+	if group == 1 or group == 2 then
+		return group
 	end
 	return 1
 end
@@ -173,7 +165,7 @@ local function HeaderGroupIDs(frame)
 			headers[#headers + 1] = groupID
 		end
 	end
-	if frame and C_Traits.GetGroupDisplayInfoByTreeID and frame.GetTalentTreeID then
+	if frame then
 		local treeID = frame:GetTalentTreeID()
 		if treeID then
 			local ok, infos = pcall(C_Traits.GetGroupDisplayInfoByTreeID, treeID)
@@ -244,7 +236,7 @@ local function BuildComponents(frame, configID)
 			end
 		end
 	end
-	if configID and C_Traits.GetGroupCurrencyInfo and #groupIDs > 0 then
+	if configID and #groupIDs > 0 then
 		local ok, infos = pcall(C_Traits.GetGroupCurrencyInfo, configID, groupIDs)
 		if ok and type(infos) == "table" then
 			for _, info in ipairs(infos) do
@@ -299,7 +291,7 @@ local function BuildComponents(frame, configID)
 		end
 	end
 	ns.currencyGroupsOf = {}
-	if configID and C_Traits.GetNodeCost then
+	if configID then
 		for nodeID in pairs(ns.structure) do
 			local ok, costs = pcall(C_Traits.GetNodeCost, configID, nodeID)
 			local groups = {}
@@ -578,14 +570,11 @@ local function CombineNode(info, extra)
 end
 
 local function ButtonNode(frame, nodeID)
-	local button = frame and frame.GetTalentButtonByNodeID and frame:GetTalentButtonByNodeID(nodeID)
+	local button = frame and frame:GetTalentButtonByNodeID(nodeID)
 	if not button then
 		return nil
 	end
-	if button.GetNodeInfo then
-		return button:GetNodeInfo()
-	end
-	return button.nodeInfo
+	return button:GetNodeInfo()
 end
 
 local function RebuildIncoming()
@@ -616,29 +605,26 @@ local function PlanConfigID(frame)
 end
 
 local function PlanTreeID(frame, configID)
-	if configID and C_Traits and C_Traits.GetConfigInfo then
+	if configID then
 		local info = C_Traits.GetConfigInfo(configID)
 		if info and info.treeIDs and info.treeIDs[1] then
 			return info.treeIDs[1]
 		end
 	end
-	if frame and frame.GetTalentTreeID then
-		return frame:GetTalentTreeID()
-	end
-	return nil
+	return frame and frame:GetTalentTreeID()
 end
 
 -- The tree's gate list is fixed layout data. The frame's own gate widgets are not
 -- read: the game shows those only while the character has not met them.
 local function TreeGates(frame, configID)
 	local treeID = PlanTreeID(frame, configID)
-	if configID and treeID and C_Traits.GetTreeInfo then
+	if configID and treeID then
 		local info = C_Traits.GetTreeInfo(configID, treeID)
 		if info and info.gates and info.gates[1] then
 			return info.gates
 		end
 	end
-	if frame and frame.GetConfigID and frame:GetConfigID() == configID and frame.GetTreeInfo then
+	if frame and frame:GetConfigID() == configID then
 		local cached = frame:GetTreeInfo()
 		if cached and cached.gates and cached.gates[1] then
 			return cached.gates
@@ -727,8 +713,8 @@ end
 local function RememberFrame(frame)
 	local configID = PlanConfigID(frame)
 	local treeID = PlanTreeID(frame, configID)
-	local nodeIDs = treeID and C_Traits.GetTreeNodes and C_Traits.GetTreeNodes(treeID)
-	if configID and nodeIDs and C_Traits.GetNodeInfo then
+	local nodeIDs = treeID and C_Traits.GetTreeNodes(treeID)
+	if configID and nodeIDs then
 		local saved = ns.structure
 		ns.structure = {}
 		for _, nodeID in ipairs(nodeIDs) do
@@ -749,11 +735,8 @@ local function RememberFrame(frame)
 		end
 		ns.structure = saved
 	end
-	if not frame.EnumerateAllTalentButtons then
-		return
-	end
 	for button in frame:EnumerateAllTalentButtons() do
-		RememberNode(button.GetNodeInfo and button:GetNodeInfo() or button.nodeInfo)
+		RememberNode(button:GetNodeInfo())
 	end
 	RebuildIncoming()
 	ApplyRowRequirements(frame)
@@ -1045,9 +1028,9 @@ local function PaintSpent(frame)
 	if planAmount and realAmount then
 		local unspent = math.max(0, Unspent())
 		planAmount:SetText(unspent)
-		if unspent > 0 and GREEN_FONT_COLOR then
+		if unspent > 0 then
 			planAmount:SetTextColor(GREEN_FONT_COLOR:GetRGBA())
-		elseif GRAY_FONT_COLOR then
+		else
 			planAmount:SetTextColor(GRAY_FONT_COLOR:GetRGBA())
 		end
 		planAmount:Show()
@@ -1107,7 +1090,7 @@ local function PaintSpent(frame)
 end
 
 local function EntryCap(frame, entryID)
-	if not frame or not frame.GetAndCacheEntryInfo or not entryID then
+	if not frame or not entryID then
 		return 1
 	end
 	local info = frame:GetAndCacheEntryInfo(entryID)
@@ -1131,7 +1114,7 @@ local function ResolvePlanEntries(frame, nodeID, nodeInfo)
 		entryIDs = nodeInfo.entryIDs
 	end
 	local nodeType = structure and structure.nodeType or nodeInfo.type
-	local tiered = Enum.TraitNodeType and nodeType == Enum.TraitNodeType.Tiered
+	local tiered = nodeType == Enum.TraitNodeType.Tiered
 	local currentID, currentRank, nextID, nextRank
 
 	if tiered and entryIDs and entryIDs[1] then
@@ -1211,7 +1194,7 @@ end
 local function TraitTreeName(frame, nodeID)
 	local structure = nodeID and ns.structure[nodeID]
 	local groupIDs = structure and structure.groupIDs
-	if frame and frame.GetTraitTreeName and frame.GetTalentTreeID then
+	if frame then
 		local name = frame:GetTraitTreeName(frame:GetTalentTreeID(), groupIDs)
 		if name and name ~= "" then
 			return name
@@ -1239,21 +1222,14 @@ local function ClientGateText(frame, nodeID, condInfo)
 			line = formatted
 		end
 	end
-	if not line and TALENT_FRAME_GATE_TOOLTIP_FORMAT then
+	if not line then
 		local ok, formatted = pcall(string.format, TALENT_FRAME_GATE_TOOLTIP_FORMAT, left)
 		if ok then
 			line = formatted
 		end
 	end
-	if line and C_StringUtil and C_StringUtil.StripHyperlinks then
+	if line then
 		line = C_StringUtil.StripHyperlinks(line)
-	end
-	return line
-end
-
-local function ColorGateLine(line)
-	if line and RED_FONT_COLOR and RED_FONT_COLOR.WrapTextInColorCode then
-		return RED_FONT_COLOR:WrapTextInColorCode(line)
 	end
 	return line
 end
@@ -1263,19 +1239,14 @@ local ChooseEntry
 local RefundNode
 
 local function AddGateLine(tooltip, line)
-	if not line or line == "" then
-		return
-	end
-	if GameTooltip_AddErrorLine then
+	if line and line ~= "" then
 		GameTooltip_AddErrorLine(tooltip, line)
-	elseif tooltip and tooltip.AddLine then
-		tooltip:AddLine(ColorGateLine(line))
 	end
 end
 
 local function GateCondInfo(frame, nodeID)
 	local structure = ns.structure[nodeID]
-	if not structure or not frame or not frame.GetAndCacheCondInfo then
+	if not structure or not frame then
 		return nil
 	end
 	local ids = {}
@@ -1294,21 +1265,11 @@ local function GateCondInfo(frame, nodeID)
 	return nil
 end
 
--- Same order as TalentUtil.GetTalentName: the definition's override, then the spell name.
+-- TalentUtil.GetTalentName: the definition's override, then the spell name.
+-- A talent with neither shows its sub tree's name.
 local function TalentDisplayName(definition, subTree)
-	local spellID = definition and definition.spellID
-	local name
-	if definition and TalentUtil and TalentUtil.GetTalentName then
-		name = TalentUtil.GetTalentName(definition.overrideName, spellID)
-	end
-	if (type(name) ~= "string" or name == "") and definition then
-		if type(definition.overrideName) == "string" and definition.overrideName ~= "" then
-			name = definition.overrideName
-		elseif spellID and C_Spell and C_Spell.GetSpellName then
-			name = C_Spell.GetSpellName(spellID)
-		end
-	end
-	if (type(name) ~= "string" or name == "") and subTree and type(subTree.name) == "string" and subTree.name ~= "" then
+	local name = definition and TalentUtil.GetTalentName(definition.overrideName, definition.spellID)
+	if (type(name) ~= "string" or name == "") and subTree then
 		name = subTree.name
 	end
 	if type(name) ~= "string" or name == "" then
@@ -1318,8 +1279,8 @@ local function TalentDisplayName(definition, subTree)
 end
 
 local function EntryVisual(frame, entryID)
-	local configID = frame and frame.GetConfigID and frame:GetConfigID()
-	if not configID or not entryID or not C_Traits.GetEntryInfo then
+	local configID = frame and frame:GetConfigID()
+	if not configID or not entryID then
 		return { entryID = entryID }
 	end
 	local entry = C_Traits.GetEntryInfo(configID, entryID)
@@ -1327,19 +1288,12 @@ local function EntryVisual(frame, entryID)
 		return { entryID = entryID }
 	end
 	-- GetDefinitionInfo takes the definition id only. The config id is not an argument.
-	local definition
-	if entry.definitionID and C_Traits.GetDefinitionInfo then
-		definition = C_Traits.GetDefinitionInfo(entry.definitionID)
-	end
-	local subTree
-	if entry.subTreeID and C_Traits.GetSubTreeInfo then
-		subTree = C_Traits.GetSubTreeInfo(configID, entry.subTreeID)
-	end
-	local spellID = definition and definition.spellID
+	local definition = entry.definitionID and C_Traits.GetDefinitionInfo(entry.definitionID)
+	local subTree = entry.subTreeID and C_Traits.GetSubTreeInfo(configID, entry.subTreeID)
 	return {
 		entryID = entryID,
 		name = TalentDisplayName(definition, subTree),
-		spellID = spellID,
+		spellID = definition and definition.spellID,
 		definition = definition,
 		subTree = subTree,
 	}
@@ -1349,24 +1303,18 @@ local function ApplyIcon(texture, visual)
 	if not texture or not visual then
 		return
 	end
-	local icon, isAtlas
-	if TalentButtonUtil and TalentButtonUtil.CalculateIconTextureFromInfo then
-		icon, isAtlas = TalentButtonUtil.CalculateIconTextureFromInfo(visual.definition, visual.subTree)
-	elseif visual.definition and visual.definition.overrideIcon then
-		icon = visual.definition.overrideIcon
-	elseif visual.spellID and C_Spell and C_Spell.GetSpellTexture then
-		icon = select(2, C_Spell.GetSpellTexture(visual.spellID))
-	end
-	if isAtlas and icon and texture.SetAtlas then
+	local icon, isAtlas = TalentButtonUtil.CalculateIconTextureFromInfo(visual.definition, visual.subTree)
+	if isAtlas and icon then
 		texture:SetAtlas(icon)
-	elseif icon and texture.SetTexture then
+	elseif icon then
 		texture:SetTexture(icon)
 	end
-	if icon or not visual.spellID or not Spell or not Spell.CreateFromSpellID then
+	-- The icon can be missing until the spell's data has loaded. Try again then.
+	if icon or not visual.spellID then
 		return
 	end
 	local spell = Spell:CreateFromSpellID(visual.spellID)
-	if not spell or spell:IsSpellDataCached() or not spell.ContinueWithCancelOnSpellLoad then
+	if not spell or spell:IsSpellDataCached() then
 		return
 	end
 	spell:ContinueWithCancelOnSpellLoad(function()
@@ -1381,7 +1329,7 @@ local function PlanSpendText(frame, nodeID)
 	if ranks < 1 and not CanAddRank(nodeID) then
 		return ""
 	end
-	if ranks <= 1 and maxRanks == 1 and frame.ShouldHideSingleRankNumbers and frame:ShouldHideSingleRankNumbers() then
+	if ranks <= 1 and maxRanks == 1 and frame:ShouldHideSingleRankNumbers() then
 		return ""
 	end
 	if ranks > 0 or CanAddRank(nodeID) then
@@ -1405,7 +1353,7 @@ local function ShowNodeTooltip(button)
 	local frame = nodeButton.calculatorFrame
 	local nodeID = nodeButton.calculatorNodeID
 	local structure = nodeID and ns.structure[nodeID]
-	if not frame or not structure or not GameTooltip then
+	if not frame or not structure then
 		return
 	end
 	local ranks, currentID, currentRank, nextID, nextRank = ResolvePlanEntries(frame, nodeID, {
@@ -1421,53 +1369,30 @@ local function ShowNodeTooltip(button)
 	local visual = button.entryVisual
 	local definition = visual and visual.definition
 	local spellID = visual and visual.spellID
-	local name = TalentDisplayName(definition, visual and visual.subTree) or ""
-	if name ~= "" and GameTooltip_SetTitle then
+	local name = TalentDisplayName(definition, visual and visual.subTree)
+	if name then
 		GameTooltip_SetTitle(GameTooltip, name)
-	elseif name ~= "" and GameTooltip.SetText then
-		GameTooltip:SetText(name)
 	end
-	if TALENT_BUTTON_TOOLTIP_RANK_FORMAT then
-		local rankShown = ranks
-		if HIGHLIGHT_FONT_COLOR and HIGHLIGHT_FONT_COLOR.WrapTextInColorCode then
-			rankShown = HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(ranks)
-		end
-		local rankLine = TALENT_BUTTON_TOOLTIP_RANK_FORMAT:format(rankShown, structure.maxRanks or 0)
-		if GameTooltip_AddHighlightLine then
-			GameTooltip_AddHighlightLine(GameTooltip, rankLine)
-		elseif GameTooltip.AddLine then
-			GameTooltip:AddLine(rankLine)
-		end
-	end
-	local subtext
-	if definition and TalentUtil and TalentUtil.GetTalentSubtext then
-		subtext = TalentUtil.GetTalentSubtext(definition.overrideSubtext, spellID)
-	end
-	if subtext and subtext ~= "" and GameTooltip_AddColoredLine and DISABLED_FONT_COLOR then
-		if GameTooltip_AddBlankLineToTooltip then
-			GameTooltip_AddBlankLineToTooltip(GameTooltip)
-		end
+	local rankShown = HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(ranks)
+	GameTooltip_AddHighlightLine(GameTooltip, TALENT_BUTTON_TOOLTIP_RANK_FORMAT:format(rankShown, structure.maxRanks or 0))
+	local subtext = definition and TalentUtil.GetTalentSubtext(definition.overrideSubtext, spellID)
+	if subtext and subtext ~= "" then
+		GameTooltip_AddBlankLineToTooltip(GameTooltip)
 		GameTooltip_AddColoredLine(GameTooltip, subtext, DISABLED_FONT_COLOR)
 	end
 	-- AppendInfo is how the talent frame fills the spell text once that data has loaded.
-	if currentID and GameTooltip.AppendInfo then
-		if GameTooltip_AddBlankLineToTooltip then
-			GameTooltip_AddBlankLineToTooltip(GameTooltip)
-		end
+	if currentID then
+		GameTooltip_AddBlankLineToTooltip(GameTooltip)
 		GameTooltip:AppendInfo("GetTraitEntry", currentID, currentRank or 0)
-	elseif definition and TalentUtil and TalentUtil.GetTalentDescription and GameTooltip.AddLine then
+	elseif definition then
 		local description = TalentUtil.GetTalentDescription(definition.overrideDescription, spellID)
 		if description and description ~= "" then
 			GameTooltip:AddLine(description, nil, nil, nil, true)
 		end
 	end
-	if nextID and ranks > 0 and GameTooltip.AppendInfo then
-		if GameTooltip_AddBlankLineToTooltip then
-			GameTooltip_AddBlankLineToTooltip(GameTooltip)
-		end
-		if TALENT_BUTTON_TOOLTIP_NEXT_RANK and GameTooltip_AddHighlightLine then
-			GameTooltip_AddHighlightLine(GameTooltip, TALENT_BUTTON_TOOLTIP_NEXT_RANK)
-		end
+	if nextID and ranks > 0 then
+		GameTooltip_AddBlankLineToTooltip(GameTooltip)
+		GameTooltip_AddHighlightLine(GameTooltip, TALENT_BUTTON_TOOLTIP_NEXT_RANK)
 		GameTooltip:AppendInfo("GetTraitEntry", nextID, nextRank or 0)
 	end
 	local left = PointsLeft(nodeID)
@@ -1478,35 +1403,24 @@ local function ShowNodeTooltip(button)
 	if invalid and reason then
 		AddGateLine(GameTooltip, reason)
 	end
-	if GameTooltip.Show then
-		GameTooltip:Show()
-	end
+	GameTooltip:Show()
 end
 
 local function ShowGateTooltip(gate)
 	local frame = gate.calculatorFrame
 	local nodeID = gate.calculatorNodeID
 	local left = PointsLeft(nodeID)
-	if not frame or not left or left <= 0 or not GameTooltip then
+	if not frame or not left or left <= 0 then
 		return
 	end
 	GameTooltip:SetOwner(gate, "ANCHOR_LEFT", 4, -4)
 	AddGateLine(GameTooltip, ClientGateText(frame, nodeID, GateCondInfo(frame, nodeID)))
-	if GameTooltip.Show then
-		GameTooltip:Show()
-	end
+	GameTooltip:Show()
 end
 
 local function NodePoint(frame, posX, posY)
-	local panX, panY = 0, 0
-	if frame.GetPanOffset then
-		local x, y = frame:GetPanOffset()
-		panX, panY = x or 0, y or 0
-	end
-	if TalentButtonUtil and TalentButtonUtil.TranslateNodePositionsToAnchorPositions then
-		return TalentButtonUtil.TranslateNodePositionsToAnchorPositions(posX or 0, posY or 0, panX, panY)
-	end
-	return 0, 0
+	local panX, panY = frame:GetPanOffset()
+	return TalentButtonUtil.TranslateNodePositionsToAnchorPositions(posX or 0, posY or 0, panX or 0, panY or 0)
 end
 
 local function HideWidget(frame, widget)
@@ -1534,26 +1448,17 @@ end
 
 local function HideClientTree(frame)
 	frame.calculatorTreeHidden = true
-	if frame.EnumerateAllTalentButtons then
-		for button in frame:EnumerateAllTalentButtons() do
-			HideWidget(frame, button)
-		end
+	for button in frame:EnumerateAllTalentButtons() do
+		HideWidget(frame, button)
 	end
-	if frame.edgePool and frame.edgePool.EnumerateActive then
-		for edge in frame.edgePool:EnumerateActive() do
-			HideWidget(frame, edge)
-		end
+	for edge in frame.edgePool:EnumerateActive() do
+		HideWidget(frame, edge)
 	end
-	if frame.gatePool and frame.gatePool.EnumerateActive then
-		for gate in frame.gatePool:EnumerateActive() do
-			HideWidget(frame, gate)
-		end
+	for gate in frame.gatePool:EnumerateActive() do
+		HideWidget(frame, gate)
 	end
-	local displays = frame.talentDisplayFramePool or frame.talentDislayFramePool
-	if displays and displays.EnumerateActive then
-		for display in displays:EnumerateActive() do
-			HideWidget(frame, display)
-		end
+	for display in frame.talentDisplayFramePool:EnumerateActive() do
+		HideWidget(frame, display)
 	end
 end
 
@@ -1626,11 +1531,11 @@ local function NodeClick(frame, nodeID, mouseButton, entryID)
 		ChangeRank(frame, nodeID, -1)
 		return
 	end
-	if IsModifiedClick and IsModifiedClick("CHATLINK") then
+	if IsModifiedClick("CHATLINK") then
 		return
 	end
 	local structure = ns.structure[nodeID]
-	local selection = Enum.TraitNodeType and structure and structure.nodeType == Enum.TraitNodeType.Selection
+	local selection = structure and structure.nodeType == Enum.TraitNodeType.Selection
 	if selection or entryID then
 		local chosen = entryID
 		if not chosen or chosen <= 0 then
@@ -1647,35 +1552,32 @@ local function NodeClick(frame, nodeID, mouseButton, entryID)
 end
 
 local function ArtSet(frame, nodeID)
-	local live = frame and frame.GetTalentButtonByNodeID and frame:GetTalentButtonByNodeID(nodeID)
+	local live = frame and frame:GetTalentButtonByNodeID(nodeID)
 	if live and live.artSet then
 		return live.artSet
 	end
-	local sets = TalentButtonArtMixin and TalentButtonArtMixin.ArtSet
-	if not sets then
-		return nil
-	end
+	local sets = TalentButtonArtMixin.ArtSet
 	local entryType = live and live.entryInfo and live.entryInfo.type
 	if not entryType and live and live.GetEntryInfo then
 		local info = live:GetEntryInfo()
 		entryType = info and info.type
 	end
-	local types = Enum and Enum.TraitNodeEntryType
-	if types and entryType == types.SpendCircle then
+	local types = Enum.TraitNodeEntryType
+	if entryType == types.SpendCircle then
 		return sets.Circle
 	end
-	if types and entryType == types.SpendCapstoneCircle then
-		return sets.CapstoneCircle or sets.Circle
+	if entryType == types.SpendCapstoneCircle then
+		return sets.CapstoneCircle
 	end
-	if types and entryType == types.SpendCapstoneSquare then
-		return sets.CapstoneSquare or sets.Square
+	if entryType == types.SpendCapstoneSquare then
+		return sets.CapstoneSquare
 	end
-	if types and entryType == types.SpendSmallCircle then
-		return sets.LegionSmallCircle or sets.Circle
+	if entryType == types.SpendSmallCircle then
+		return sets.LegionSmallCircle
 	end
 	local structure = ns.structure[nodeID]
-	local selection = Enum.TraitNodeType and structure and structure.nodeType == Enum.TraitNodeType.Selection
-	if selection and sets.Choice then
+	local selection = structure and structure.nodeType == Enum.TraitNodeType.Selection
+	if selection then
 		return sets.Choice
 	end
 	return sets.Square
@@ -1734,7 +1636,7 @@ local function BorderAtlas(frame, nodeID, entryID)
 end
 
 local function ApplyBorder(texture, atlas)
-	if not texture or not atlas or not texture.SetAtlas then
+	if not texture or not atlas then
 		return
 	end
 	texture:ClearAllPoints()
@@ -1747,23 +1649,19 @@ local function ApplyShadow(texture, atlas)
 	if not texture then
 		return
 	end
-	if not atlas or atlas == "" or not texture.SetAtlas then
+	if not atlas or atlas == "" then
 		texture:Hide()
 		return
 	end
 	texture:ClearAllPoints()
 	texture:SetPoint("CENTER")
-	local useAtlasSize = true
-	if TextureKitConstants and TextureKitConstants.UseAtlasSize ~= nil then
-		useAtlasSize = TextureKitConstants.UseAtlasSize
-	end
-	texture:SetAtlas(atlas, useAtlasSize)
+	texture:SetAtlas(atlas, TextureKitConstants.UseAtlasSize)
 	texture:Show()
 end
 
 local function BindEdgeOffset(button, frame, nodeID)
 	button.GetEdgeDiameterOffset = nil
-	local live = frame and frame.GetTalentButtonByNodeID and frame:GetTalentButtonByNodeID(nodeID)
+	local live = frame and frame:GetTalentButtonByNodeID(nodeID)
 	if live and live.GetEdgeDiameterOffset then
 		button.GetEdgeDiameterOffset = function(_, angle)
 			return live:GetEdgeDiameterOffset(angle)
@@ -1772,10 +1670,7 @@ local function BindEdgeOffset(button, frame, nodeID)
 	end
 	local mixin = TalentButtonArtMixin
 	local art = ArtSet(frame, nodeID)
-	local sets = mixin and mixin.ArtSet
-	if not mixin or not art or not sets then
-		return
-	end
+	local sets = mixin.ArtSet
 	if art == sets.Square or art == sets.CapstoneSquare or art == sets.LegacySquare or art == sets.LegionSquare or art == sets.LargeSquare then
 		button.GetEdgeDiameterOffset = mixin.GetSquareEdgeDiameterOffset
 	elseif art == sets.Choice or art == sets.LegionChoice then
@@ -1788,17 +1683,10 @@ end
 local function ApplyShade(icon, shade, look)
 	local dimmed = look == "gated" or look == "locked" or look == "disabled"
 	local refund = look == "refund"
-	if icon and icon.SetDesaturated then
+	if icon then
 		icon:SetDesaturated(dimmed)
-	end
-	if icon and icon.SetVertexColor then
-		if refund and DIM_RED_FONT_COLOR then
-			icon:SetVertexColor(DIM_RED_FONT_COLOR:GetRGBA())
-		elseif WHITE_FONT_COLOR then
-			icon:SetVertexColor(WHITE_FONT_COLOR:GetRGBA())
-		else
-			icon:SetVertexColor(1, 1, 1, 1)
-		end
+		local color = refund and DIM_RED_FONT_COLOR or WHITE_FONT_COLOR
+		icon:SetVertexColor(color:GetRGBA())
 	end
 	if not shade then
 		return
@@ -1810,16 +1698,11 @@ local function ApplyShade(icon, shade, look)
 end
 
 local function ButtonSize(frame)
-	if frame.GetButtonSize then
-		local size = frame:GetButtonSize()
-		if type(size) == "number" and size > 0 then
-			return size
-		end
+	local size = frame:GetButtonSize()
+	if type(size) == "number" and size > 0 then
+		return size
 	end
-	if type(frame.buttonSize) == "number" and frame.buttonSize > 0 then
-		return frame.buttonSize
-	end
-	local info = frame.GetTreeInfo and frame:GetTreeInfo()
+	local info = frame:GetTreeInfo()
 	if info and type(info.buttonSize) == "number" and info.buttonSize > 0 then
 		return info.buttonSize
 	end
@@ -1827,15 +1710,12 @@ local function ButtonSize(frame)
 end
 
 local function LiveButton(frame, nodeID)
-	if frame and frame.GetTalentButtonByNodeID then
-		return frame:GetTalentButtonByNodeID(nodeID)
-	end
-	return nil
+	return frame and frame:GetTalentButtonByNodeID(nodeID)
 end
 
 local function MatchIcon(icon, shade, live)
 	local source = live and live.Icon
-	if not icon or not source or not source.GetSize then
+	if not icon or not source then
 		return
 	end
 	local width, height = source:GetSize()
@@ -1854,38 +1734,28 @@ end
 
 local function MatchSpendText(text, live)
 	local source = live and live.SpendText
-	if not text or not source or not source.GetFont or not text.SetFont then
+	if not text or not source then
 		return
 	end
 	local font, size, flags = source:GetFont()
 	if font and size and size > 0 then
 		text:SetFont(font, size, flags)
 	end
-	if source.GetPoint and text.ClearAllPoints then
-		local point, _, relativePoint, x, y = source:GetPoint(1)
-		if point then
-			text:ClearAllPoints()
-			text:SetPoint(point, text:GetParent(), relativePoint or point, x or 0, y or 0)
-		end
+	local point, _, relativePoint, x, y = source:GetPoint(1)
+	if point then
+		text:ClearAllPoints()
+		text:SetPoint(point, text:GetParent(), relativePoint or point, x or 0, y or 0)
 	end
-	if source.GetJustifyH and text.SetJustifyH then
-		local justify = source:GetJustifyH()
-		if justify then
-			text:SetJustifyH(justify)
-		end
+	local justify = source:GetJustifyH()
+	if justify then
+		text:SetJustifyH(justify)
 	end
 end
 
 -- NameMatch atlas from TalentButtonUtil.GetStyleForSearchMatchType, same mark the talent button shows.
 local function SearchMatchAtlas()
-	local matchType = SpellSearchUtil and SpellSearchUtil.MatchType and SpellSearchUtil.MatchType.NameMatch
-	if matchType and TalentButtonUtil and TalentButtonUtil.GetStyleForSearchMatchType then
-		local style = TalentButtonUtil.GetStyleForSearchMatchType(matchType)
-		if type(style) == "table" and type(style.icon) == "string" and style.icon ~= "" then
-			return style.icon
-		end
-	end
-	return "talents-search-match"
+	local style = TalentButtonUtil.GetStyleForSearchMatchType(SpellSearchUtil.MatchType.NameMatch)
+	return style and style.icon or "talents-search-match"
 end
 
 -- The layers every plan button draws, sized like the talent button it stands for.
@@ -1896,9 +1766,7 @@ local function CreatePlanButton(frame, board, nodeID)
 		button:SetSize(size, size)
 	end
 	button:RegisterForClicks("LeftButtonDown", "RightButtonDown")
-	if GameTooltip_Hide then
-		button:SetScript("OnLeave", GameTooltip_Hide)
-	end
+	button:SetScript("OnLeave", GameTooltip_Hide)
 	local shadow = button:CreateTexture(nil, "BACKGROUND")
 	shadow:SetPoint("CENTER")
 	shadow:Hide()
@@ -1908,9 +1776,7 @@ local function CreatePlanButton(frame, board, nodeID)
 	button.icon = icon
 	local shade = button:CreateTexture(nil, "ARTWORK", nil, 1)
 	shade:SetAllPoints(icon)
-	if shade.SetColorTexture then
-		shade:SetColorTexture(0, 0, 0, 1)
-	end
+	shade:SetColorTexture(0, 0, 0, 1)
 	shade:Hide()
 	button.shade = shade
 	local border = button:CreateTexture(nil, "OVERLAY")
@@ -1931,9 +1797,7 @@ local function CreateNodeButton(frame, board, nodeID)
 	local searchIcon = button:CreateTexture(nil, "OVERLAY")
 	searchIcon:SetPoint("CENTER", button.icon, "TOPRIGHT", 0, 0)
 	searchIcon:SetSize(63, 63)
-	if searchIcon.SetAtlas then
-		searchIcon:SetAtlas(SearchMatchAtlas(), true)
-	end
+	searchIcon:SetAtlas(SearchMatchAtlas(), true)
 	searchIcon:Hide()
 	button.SearchIcon = searchIcon
 	local text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -1946,7 +1810,7 @@ local function CreateNodeButton(frame, board, nodeID)
 end
 
 local function EnsureChoices(frame, board, button, structure)
-	local selection = Enum.TraitNodeType and structure.nodeType == Enum.TraitNodeType.Selection
+	local selection = structure.nodeType == Enum.TraitNodeType.Selection
 	local entries = structure.entryIDs or {}
 	if not selection or #entries < 2 then
 		for _, choice in ipairs(button.choices) do
@@ -1984,7 +1848,7 @@ local function EnsureBoard(frame)
 	local parent = frame.ButtonsParent or frame
 	local board = CreateFrame("Frame", nil, parent)
 	board:SetAllPoints(parent)
-	board:SetFrameLevel((parent.GetFrameLevel and parent:GetFrameLevel() or 0) + 20)
+	board:SetFrameLevel(parent:GetFrameLevel() + 20)
 	frame.calculatorBoard = board
 	frame.calculatorNodes = {}
 	frame.calculatorEdges = {}
@@ -1998,24 +1862,14 @@ local function PlaceNode(frame, board, button, structure, shift)
 end
 
 local function MakeEdgeWidgets(parent)
-	local line
-	if parent.CreateLine then
-		line = parent:CreateLine(nil, "ARTWORK")
-	end
-	if not line then
-		line = parent:CreateTexture(nil, "ARTWORK")
-	end
+	local line = parent:CreateLine(nil, "ARTWORK")
 	local arrow = parent:CreateTexture(nil, "OVERLAY")
 	arrow:Hide()
 	return line, arrow
 end
 
 local function ShowsArrow(style)
-	local styles = Enum and Enum.TraitEdgeVisualStyle
-	if not styles or style == nil or style == styles.Straight then
-		return true
-	end
-	return false
+	return style == nil or style == Enum.TraitEdgeVisualStyle.Straight
 end
 
 local function ArrowNames(edge)
@@ -2032,16 +1886,17 @@ local function ArrowNames(edge)
 	return "talents-arrow-line-" .. name, "talents-arrow-head-" .. name
 end
 
+-- The target's size on screen: the plan button, or the talent button before the plan button has one.
 local function NodeSpan(button, frame, nodeID)
 	local function span(widget)
-		if not widget or not widget.GetWidth then
+		if not widget then
 			return nil
 		end
 		local width = widget:GetWidth()
 		if type(width) ~= "number" or width <= 0 then
 			return nil
 		end
-		local height = widget.GetHeight and widget:GetHeight() or width
+		local height = widget:GetHeight()
 		if type(height) ~= "number" or height <= 0 then
 			height = width
 		end
@@ -2057,14 +1912,12 @@ local function NodeSpan(button, frame, nodeID)
 	return width, height
 end
 
+-- The button's own shape when BindEdgeOffset gave it one, otherwise a circle.
 local function DiameterOffset(button, angle)
-	if button.GetEdgeDiameterOffset and type(Lerp) == "function" and TalentButtonUtil then
+	if button.GetEdgeDiameterOffset then
 		return button:GetEdgeDiameterOffset(angle)
 	end
-	if TalentButtonUtil and type(TalentButtonUtil.CircleEdgeDiameterOffset) == "number" then
-		return TalentButtonUtil.CircleEdgeDiameterOffset
-	end
-	return 1.2
+	return TalentButtonUtil.CircleEdgeDiameterOffset
 end
 
 -- TalentEdgeArrowMixin:UpdatePosition stops the line on the arrow head, just outside the target.
@@ -2087,21 +1940,12 @@ local function PlaceArrow(frame, edge)
 	local width, height = NodeSpan(toButton, frame, edge.targetID)
 	local xOffset = (width / 2) * math.cos(angle) * offset
 	local yOffset = (height / 2) * math.sin(angle) * offset
-	if line.SetStartPoint then
-		line:SetStartPoint("CENTER", fromButton)
-	end
-	if line.SetEndPoint then
-		line:SetEndPoint("CENTER", toButton, xOffset, yOffset)
-	end
+	line:SetStartPoint("CENTER", fromButton)
+	line:SetEndPoint("CENTER", toButton, xOffset, yOffset)
 	local arrow = edge.arrow
-	if not arrow then
-		return
-	end
 	arrow:ClearAllPoints()
 	arrow:SetPoint("CENTER", toButton, xOffset, yOffset)
-	if arrow.SetRotation then
-		arrow:SetRotation(angle - (math.pi / 2))
-	end
+	arrow:SetRotation(angle - (math.pi / 2))
 end
 
 local function PaintEdge(frame, edge)
@@ -2112,44 +1956,21 @@ local function PaintEdge(frame, edge)
 		edge.active = nil
 	end
 	local show = ShowsArrow(edge.visualStyle)
-	local line = edge.line
-	local arrow = edge.arrow
-	if line and line.SetShown then
-		line:SetShown(show)
-	end
-	if arrow and arrow.SetShown then
-		arrow:SetShown(show)
-	end
-	if not show or not line then
+	edge.line:SetShown(show)
+	edge.arrow:SetShown(show)
+	if not show then
 		return
 	end
 	local lineAtlas, headAtlas = ArrowNames(edge)
-	local ignoreSize = false
-	if TextureKitConstants and TextureKitConstants.IgnoreAtlasSize ~= nil then
-		ignoreSize = TextureKitConstants.IgnoreAtlasSize
+	edge.line:SetThickness(6)
+	-- The Line API does not list SetHorizTile. Blizzard's arrows repeat through hWrapMode in XML.
+	if edge.line.SetHorizTile then
+		edge.line:SetHorizTile(true)
 	end
-	if line.SetThickness then
-		line:SetThickness(6)
-	end
-	if line.SetHorizTile then
-		line:SetHorizTile(true)
-	end
-	if line.SetVertexColor then
-		line:SetVertexColor(1, 1, 1, 1)
-	end
-	if line.SetAtlas then
-		line:SetAtlas(lineAtlas, ignoreSize)
-	end
-	if arrow and arrow.SetAtlas then
-		local useAtlasSize = true
-		if TextureKitConstants and TextureKitConstants.UseAtlasSize ~= nil then
-			useAtlasSize = TextureKitConstants.UseAtlasSize
-		end
-		if arrow.SetVertexColor then
-			arrow:SetVertexColor(1, 1, 1, 1)
-		end
-		arrow:SetAtlas(headAtlas, useAtlasSize)
-	end
+	edge.line:SetVertexColor(1, 1, 1, 1)
+	edge.line:SetAtlas(lineAtlas, TextureKitConstants.IgnoreAtlasSize)
+	edge.arrow:SetVertexColor(1, 1, 1, 1)
+	edge.arrow:SetAtlas(headAtlas, TextureKitConstants.UseAtlasSize)
 	PlaceArrow(frame, edge)
 end
 
@@ -2178,8 +1999,6 @@ local function BuildEdges(frame, board)
 			local line, arrow = MakeEdgeWidgets(board)
 			record = { line = line, arrow = arrow }
 			lines[index] = record
-		elseif not record.arrow then
-			record.arrow = board:CreateTexture(nil, "OVERLAY")
 		end
 		record.fromID = info.fromID
 		record.targetID = info.targetID
@@ -2187,19 +2006,12 @@ local function BuildEdges(frame, board)
 		record.visualStyle = info.visualStyle
 		record.fromButton = info.fromButton
 		record.toButton = info.toButton
-		if record.line and record.line.Show then
-			record.line:Show()
-		end
+		record.line:Show()
 		PaintEdge(frame, record)
 	end
 	for index = #wanted + 1, #lines do
-		local record = lines[index]
-		if record and record.line and record.line.Hide then
-			record.line:Hide()
-		end
-		if record and record.arrow and record.arrow.Hide then
-			record.arrow:Hide()
-		end
+		lines[index].line:Hide()
+		lines[index].arrow:Hide()
 		lines[index] = nil
 	end
 end
@@ -2243,6 +2055,17 @@ local function BuildBoard(frame)
 	board:Show()
 end
 
+-- The talent button's visual state for each look. It picks the rank number's color.
+local LOOK_STATE = {
+	refund = "RefundInvalid",
+	gated = "Gated",
+	locked = "Locked",
+	selectable = "Selectable",
+	maxed = "Maxed",
+	normal = "Normal",
+	disabled = "Disabled",
+}
+
 local function PaintNode(frame, nodeID)
 	local button = frame.calculatorNodes and frame.calculatorNodes[nodeID]
 	if not button then
@@ -2264,38 +2087,13 @@ local function PaintNode(frame, nodeID)
 	if button.rankText then
 		MatchSpendText(button.rankText, LiveButton(frame, nodeID))
 		MatchIcon(button.icon, button.shade, LiveButton(frame, nodeID))
-		if button.rankText.GetFont and not button.rankText:GetFont() and button.rankText.SetFontObject and GameFontHighlight then
+		if not button.rankText:GetFont() then
 			button.rankText:SetFontObject(GameFontHighlight)
 		end
 		button.rankText:SetText(PlanSpendText(frame, nodeID))
-		local look = NodeLook(nodeID)
-		local states = TalentButtonUtil and TalentButtonUtil.BaseVisualState
-		local color
-		if states and TalentButtonUtil.GetColorForBaseVisualState then
-			local visual = look == "refund" and states.RefundInvalid
-				or look == "gated" and states.Gated
-				or look == "locked" and states.Locked
-				or look == "selectable" and states.Selectable
-				or look == "maxed" and states.Maxed
-				or look == "normal" and states.Normal
-				or states.Disabled
-			color = TalentButtonUtil.GetColorForBaseVisualState(visual)
-		elseif look == "gated" or look == "locked" or look == "disabled" then
-			color = DISABLED_FONT_COLOR
-		elseif look == "selectable" then
-			color = GREEN_FONT_COLOR
-		elseif look == "refund" then
-			color = RED_FONT_COLOR
-		else
-			color = YELLOW_FONT_COLOR
-		end
-		if color and button.rankText.SetTextColor then
-			if color.GetRGB then
-				button.rankText:SetTextColor(color:GetRGB())
-			elseif color.GetRGBA then
-				button.rankText:SetTextColor(color:GetRGBA())
-			end
-		end
+		local states = TalentButtonUtil.BaseVisualState
+		local color = TalentButtonUtil.GetColorForBaseVisualState(states[LOOK_STATE[NodeLook(nodeID)]])
+		button.rankText:SetTextColor(color:GetRGB())
 	end
 	local look = NodeLook(nodeID)
 	ApplyBorder(button.border, BorderAtlas(frame, nodeID))
@@ -2309,11 +2107,11 @@ local function PaintNode(frame, nodeID)
 end
 
 local function RefreshOpenTooltip()
-	if not GameTooltip or not GameTooltip.IsShown or not GameTooltip:IsShown() then
+	if not GameTooltip:IsShown() then
 		return
 	end
-	local owner = GameTooltip.GetOwner and GameTooltip:GetOwner()
-	if owner and owner.calculatorNodeID and owner.GetScript then
+	local owner = GameTooltip:GetOwner()
+	if owner and owner.calculatorNodeID then
 		local script = owner:GetScript("OnEnter")
 		if script then
 			script(owner)
@@ -2406,9 +2204,7 @@ function BuildGates(frame)
 				gate = CreateFrame("Frame", nil, button)
 				gate:EnableMouse(true)
 				gate:SetScript("OnEnter", ShowGateTooltip)
-				if GameTooltip_Hide then
-					gate:SetScript("OnLeave", GameTooltip_Hide)
-				end
+				gate:SetScript("OnLeave", GameTooltip_Hide)
 				local text = gate:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 				text:SetPoint("RIGHT", gate, "RIGHT", 0, 0)
 				gate.GateText = text
@@ -2421,11 +2217,7 @@ function BuildGates(frame)
 			gate.calculatorFrame = frame
 			gate.calculatorNodeID = gateInfo.topLeftNodeID
 			gate:ClearAllPoints()
-			if frame.AnchorGate then
-				frame:AnchorGate(gate, button)
-			else
-				gate:SetPoint("RIGHT", button, "LEFT")
-			end
+			frame:AnchorGate(gate, button)
 			local anchor = ns.structure[gateInfo.topLeftNodeID]
 			local fullAmount = anchor and anchor.requiredSpent
 			if gate.GateText and fullAmount and fullAmount > 0 then
@@ -2566,13 +2358,9 @@ local function UpdateSlotDropdown(frame)
 	if not dropdown then
 		return
 	end
-	local text = SlotText(ns.slot or 1)
-	dropdown.calculatorLabel = text
-	if dropdown.GenerateMenu and dropdown.menuGenerator then
+	-- Rebuilding the menu refreshes the selected slot shown on the button.
+	if dropdown.menuGenerator then
 		pcall(dropdown.GenerateMenu, dropdown)
-	end
-	if not dropdown.SetupMenu and dropdown.SetText then
-		dropdown:SetText(text)
 	end
 end
 
@@ -2599,9 +2387,7 @@ function HideRealActions(frame)
 	frame.ApplyButton:Disable()
 	frame.UndoButton:Hide()
 	frame.ResetButton:Hide()
-	if frame.ActiveSpec then
-		frame.ActiveSpec:Hide()
-	end
+	frame.ActiveSpec:Hide()
 	HideLockedOverlay(frame)
 	if frame.calculatorSaveButton then
 		frame.calculatorSaveButton:SetText(ClientText("SAVE", "Save"))
@@ -2615,9 +2401,7 @@ function HideRealActions(frame)
 	end
 	if frame.calculatorSlotDropdown then
 		if frame:IsShown() then
-			if frame.calculatorSlotDropdown.PlaceOnTalentFrame then
-				frame.calculatorSlotDropdown:PlaceOnTalentFrame()
-			end
+			frame.calculatorSlotDropdown:PlaceOnTalentFrame()
 			frame.calculatorSlotDropdown:Show()
 			UpdateSlotDropdown(frame)
 		else
@@ -2639,19 +2423,13 @@ local function ShowRealActions(frame)
 		frame.calculatorClearButton:Hide()
 	end
 	if frame.calculatorSlotDropdown then
-		if frame.calculatorSlotDropdown.CloseMenu then
-			frame.calculatorSlotDropdown:CloseMenu()
-		end
+		frame.calculatorSlotDropdown:CloseMenu()
 		frame.calculatorSlotDropdown:Hide()
 	end
 	ShowCharacterTalentNumbers(frame)
 	frame.ApplyButton:Show()
-	if frame.UpdateConfigButtonsState then
-		frame:UpdateConfigButtonsState()
-	end
-	if frame.InitializeActiveSpec then
-		frame:InitializeActiveSpec()
-	end
+	frame:UpdateConfigButtonsState()
+	frame:InitializeActiveSpec()
 end
 
 local function SnapshotRanks()
@@ -2869,11 +2647,6 @@ local function CreateButtons(frame)
 
 	-- UIParent + DIALOG so the talent tree cannot take the click. This is the game's dropdown.
 	local dropdown = CreateFrame("DropdownButton", nil, UIParent, "WowStyle1DropdownTemplate")
-	if not dropdown.SetupMenu then
-		dropdown:Hide()
-		dropdown = CreateFrame("Button", nil, UIParent, "UIPanelButtonNoTooltipTemplate")
-		dropdown:SetSize(160, 22)
-	end
 	dropdown:SetFrameStrata("DIALOG")
 	dropdown:SetFrameLevel(100)
 	dropdown:SetWidth(160)
@@ -2885,29 +2658,20 @@ local function CreateButtons(frame)
 	end
 	PlaceDropdown()
 	dropdown.PlaceOnTalentFrame = PlaceDropdown
-	if not dropdown.SetupMenu then
-		function dropdown:GetText()
-			return self.calculatorLabel or SlotText(ns.slot or 1)
+	dropdown:SetupMenu(function(_, rootDescription)
+		local function isSelected(group)
+			return (ns.slot or 1) == group
 		end
-	end
-	if dropdown.SetupMenu then
-		dropdown:SetupMenu(function(_, rootDescription)
-			local function isSelected(group)
-				return (ns.slot or 1) == group
-			end
-			local function setSelected(group)
-				SelectSlot(frame, group)
-			end
-			rootDescription:CreateRadio(SlotText(1), isSelected, setSelected, 1)
-			rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
-		end)
-	end
+		local function setSelected(group)
+			SelectSlot(frame, group)
+		end
+		rootDescription:CreateRadio(SlotText(1), isSelected, setSelected, 1)
+		rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
+	end)
 	dropdown:Hide()
 
 	local function HideDropdown()
-		if dropdown.CloseMenu then
-			dropdown:CloseMenu()
-		end
+		dropdown:CloseMenu()
 		dropdown:Hide()
 	end
 	if not frame.calculatorSlotHooked then
@@ -3081,16 +2845,7 @@ local function Install(frame)
 	-- A nil or short search is inactive even while the box still holds the old query.
 	local committedQuery = nil
 	local function CommitFullSearch(searchText)
-		local minChars = type(MIN_CHARACTER_SEARCH) == "number" and MIN_CHARACTER_SEARCH or 3
-		local length = 0
-		if type(searchText) == "string" then
-			if strlen then
-				length = strlen(searchText)
-			else
-				length = #searchText
-			end
-		end
-		if type(searchText) == "string" and length >= minChars then
+		if type(searchText) == "string" and strlen(searchText) >= MIN_CHARACTER_SEARCH then
 			committedQuery = searchText
 		else
 			committedQuery = nil
@@ -3132,9 +2887,7 @@ local function Install(frame)
 			local searchIcon = button.SearchIcon
 			if searchIcon then
 				if matched then
-					if searchIcon.SetAtlas then
-						searchIcon:SetAtlas(SearchMatchAtlas(), true)
-					end
+					searchIcon:SetAtlas(SearchMatchAtlas(), true)
 					searchIcon:Show()
 				else
 					searchIcon:Hide()
