@@ -1,9 +1,9 @@
 ## Interface: 16001
 ## Title: Simple Talents Forever
 ## Notes: A simple talent calculator that looks like it belongs: plan a level 60 build on the Talents window. Does not change the character's talents.
-## Version: 0.4.2
+## Version: 0.4.3
 ## IconAtlas: UI-HUD-MicroMenu-SpecTalents-Up
 ## AllowLoadGameType: camelot
-## SavedVariables: SimpleTalentsForeverDB, TalentCalculatorDB
+## SavedVariables: SimpleTalentsForeverDB
 
 Core.lua

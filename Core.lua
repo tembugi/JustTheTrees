@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.4.2"
+local VERSION = "0.4.3"
 -- The addon's name as the player sees it: the title on the points row and in chat.
 local ADDON_TITLE = "Simple Talents Forever"
 local TAB_TEXT = "Simple Talents"
@@ -83,36 +83,27 @@ end
 -- the save format, and per character the Primary (build) and Secondary plans.
 -- Anything else, left by older versions or damaged, is dropped.
 -- A new saved field has to be added here too, or it is dropped on the next load.
---
--- Before 0.4.1 the addon was TalentCalculator and saved TalentCalculatorDB, in the
--- same layout. The .toc still lists that name, so a save file renamed by the player
--- loads it here. Its characters are read once, a character in both keeps the new
--- plans, and the old name is cleared so it is not written again.
 local function NormalizeSaved()
+	local old = SimpleTalentsForeverDB
 	local clean = {
 		format = SAVE_FORMAT,
 		characters = {},
 	}
-	local sources = { TalentCalculatorDB, SimpleTalentsForeverDB }
-	for index = 1, 2 do
-		local old = sources[index]
-		if type(old) == "table" and type(old.characters) == "table" then
-			for key, record in pairs(old.characters) do
-				if type(key) == "string" and key ~= "" and type(record) == "table" then
-					local build = CleanPlan(record.build)
-					local secondary = CleanPlan(record.secondary)
-					if build or secondary then
-						clean.characters[key] = {
-							build = build,
-							secondary = secondary,
-						}
-					end
+	if type(old) == "table" and type(old.characters) == "table" then
+		for key, record in pairs(old.characters) do
+			if type(key) == "string" and key ~= "" and type(record) == "table" then
+				local build = CleanPlan(record.build)
+				local secondary = CleanPlan(record.secondary)
+				if build or secondary then
+					clean.characters[key] = {
+						build = build,
+						secondary = secondary,
+					}
 				end
 			end
 		end
 	end
 	SimpleTalentsForeverDB = clean
-	TalentCalculatorDB = nil
 end
 
 local function CharacterKey()

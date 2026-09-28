@@ -36,4 +36,3 @@ The name is "Simple Talents Forever" (folder, repo and packages `SimpleTalentsFo
 - `NormalizeSaved` rebuilds `SimpleTalentsForeverDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
 - A plan shown on the tree is fitted to it (`FitPlanToTree`): ranks capped at the talent's max, a choice the node no longer has becomes its first one, and points over the budget come off the deepest rows.
 - Own class only.
-- The old saved variable `TalentCalculatorDB` stays listed in the `.toc` so a save file the player renamed from `TalentCalculator.lua` to `SimpleTalentsForever.lua` still loads. `NormalizeSaved` reads it once, keeps the newer plans for a character in both, and clears it. Remove it from the `.toc` and the code only when the user says the move is done.
