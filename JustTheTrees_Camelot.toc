@@ -1,8 +1,9 @@
 ## Interface: 16001
 ## Title: Just the Trees
 ## Notes: Just the talent trees: plan a level 60 build in a tab that looks like the game's own. Does not change the character's talents.
-## Version: 0.5.0
+## Version: 0.5.1
 ## Author: tembugi
+## Category: Talents
 ## IconAtlas: UI-HUD-MicroMenu-SpecTalents-Up
 ## AllowLoadGameType: camelot
 ## SavedVariables: JustTheTreesDB
