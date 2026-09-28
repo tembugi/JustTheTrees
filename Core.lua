@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.4.1"
+local VERSION = "0.4.2"
 -- The addon's name as the player sees it: the title on the points row and in chat.
 local ADDON_TITLE = "Simple Talents Forever"
 local TAB_TEXT = "Simple Talents"
@@ -1938,28 +1938,33 @@ local function MatchSpendText(text, live)
 end
 
 -- The talent window's own search result for a talent: exact name, name, description
--- or related match, the same answer its buttons get. For a choice node it is the best
--- match across its entries. Action bar matches ("not on your action bar") are about
--- the character's own bars, so a planned talent does not show them.
-local function PlanSearchMatchType(frame, nodeID)
-	local matchType = frame:GetSearchMatchTypeForEntry(nodeID, nil)
-	if SpellSearchUtil.IsActionBarMatchType(matchType) then
+-- or related match, the same answer its buttons get. With no entry it is the best
+-- match across a choice node's entries, as on the node's button; with an entry it is
+-- that choice's own match, as on the game's choice buttons. Action bar matches ("not
+-- on your action bar") are about the character's own bars, so a planned talent does
+-- not show them. A type with no mark in TalentButtonUtil counts as no match.
+local function PlanSearchMatchType(frame, nodeID, entryID)
+	local matchType = frame:GetSearchMatchTypeForEntry(nodeID, entryID)
+	if not matchType or SpellSearchUtil.IsActionBarMatchType(matchType) or not TalentButtonUtil.GetStyleForSearchMatchType(matchType) then
 		return nil
 	end
 	return matchType
 end
 
--- Each plan button shows the mark TalentButtonSearchIconMixin:SetMatchType picks for
--- the same result, from TalentButtonUtil.GetStyleForSearchMatchType.
+-- TalentButtonArtMixin:UpdateSearchIcon: the mark takes the match type, and a shown
+-- mark sits 50 levels above its button.
+local function SetSearchMark(button, matchType)
+	button.SearchIcon:SetMatchType(matchType)
+	if matchType then
+		button.SearchIcon:SetFrameLevel(button:GetFrameLevel() + 50)
+	end
+end
+
 local function ApplyPlanSearch(frame)
 	for nodeID, button in pairs(frame.calculatorNodes or {}) do
-		local matchType = PlanSearchMatchType(frame, nodeID)
-		local style = matchType and TalentButtonUtil.GetStyleForSearchMatchType(matchType)
-		if style then
-			button.SearchIcon:SetAtlas(style.icon, true)
-			button.SearchIcon:Show()
-		else
-			button.SearchIcon:Hide()
+		SetSearchMark(button, PlanSearchMatchType(frame, nodeID, nil))
+		for _, choice in ipairs(button.choices) do
+			SetSearchMark(choice, choice:IsShown() and PlanSearchMatchType(frame, nodeID, choice.entryID) or nil)
 		end
 	end
 end
@@ -1988,6 +1993,15 @@ local function CreatePlanButton(frame, board, nodeID)
 	local border = button:CreateTexture(nil, "OVERLAY")
 	border:SetAllPoints(button)
 	button.border = border
+	-- The talent button's own search mark (TalentButtonArt.xml): the game's template,
+	-- 63 across, centered on the icon's top right, with an 18 wide hover spot for its
+	-- tooltip. The template pulses the mark while it is shown.
+	local searchIcon = CreateFrame("Frame", nil, button, "TalentButtonSearchIconTemplate")
+	searchIcon:SetSize(63, 63)
+	searchIcon:SetPoint("CENTER", icon, "TOPRIGHT")
+	searchIcon.Mouseover:SetSize(18, 18)
+	searchIcon:Hide()
+	button.SearchIcon = searchIcon
 	MatchIcon(icon, shade, LiveButton(frame, nodeID))
 	return button
 end
@@ -2001,12 +2015,6 @@ local function CreateNodeButton(frame, board, nodeID)
 		NodeClick(frame, nodeID, mouseButton)
 	end)
 	button:SetScript("OnEnter", ShowNodeTooltip)
-	-- Same corner as the talent button's SearchIcon: centered on the icon's top right.
-	local searchIcon = button:CreateTexture(nil, "OVERLAY")
-	searchIcon:SetPoint("CENTER", button.icon, "TOPRIGHT", 0, 0)
-	searchIcon:SetSize(63, 63)
-	searchIcon:Hide()
-	button.SearchIcon = searchIcon
 	local text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	text:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
 	text:SetJustifyH("RIGHT")

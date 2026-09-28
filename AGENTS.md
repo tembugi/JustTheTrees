@@ -15,6 +15,7 @@ The name is "Simple Talents Forever" (folder, repo and packages `SimpleTalentsFo
 - The look and the working logic are 1:1 with the game's talent window. The look and UX are set; change them only when the user asks.
 - The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Simple Talents Forever" in the game's gold title font in the center of that row, both only on the calculator tab.
 - Chat lines start with "Simple Talents Forever:" in gold.
+- Search marks come from the talent window's own search and use the game's search mark (`TalentButtonSearchIconTemplate`: the icon for each match type, its pulse and its hover text), on talent buttons and on each choice. "Not on your action bar" marks are left out: planned talents are not on the character's bars.
 
 ## Points
 
