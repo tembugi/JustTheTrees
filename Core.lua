@@ -1,5 +1,9 @@
 local addonName, ns = ...
 
+-- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
+-- so the in-game label uses this, which /reload picks up.
+local VERSION = "0.2.1"
+
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
 local FIRST_TALENT_LEVEL = 10
@@ -921,7 +925,7 @@ local function VersionLabel(frame)
 	if not display.calculatorVersionText then
 		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
 		text:SetJustifyH("LEFT")
-		text:SetText("v" .. C_AddOns.GetAddOnMetadata(addonName, "Version"))
+		text:SetText("v" .. VERSION)
 		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
 		text:SetPoint("LEFT", frame.BackgroundBorder, "TOPLEFT", 20, -6 - rowHeight / 2)
 		text:Hide()
