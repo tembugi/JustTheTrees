@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: Talent Calculator
 ## Notes: Plans a level 60 talent build on the Talents tab. Does not change the character's talents.
-## Version: 0.2.2
+## Version: 0.2.3
 ## IconAtlas: UI-HUD-MicroMenu-SpecTalents-Up
 ## AllowLoadGameType: camelot
 ## SavedVariables: TalentCalculatorDB

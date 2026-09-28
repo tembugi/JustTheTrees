@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.2.2"
+local VERSION = "0.2.3"
 
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
