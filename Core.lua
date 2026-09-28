@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.2.3"
+local VERSION = "0.2.4"
 
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
@@ -36,33 +36,41 @@ local function ShowingCalculator(frame)
 	return frame and frame.calculatorMode and frame.calculatorTabID and frame:GetTab() == frame.calculatorTabID
 end
 
-local function EnsureSaved()
-	if type(TalentCalculatorDB) ~= "table" then
-		TalentCalculatorDB = {}
-	end
-	if type(TalentCalculatorDB.characters) ~= "table" then
-		TalentCalculatorDB.characters = {}
-	end
-end
-
 -- The saved layout's version. Raise it only when a change stores plans differently,
 -- and convert the older layout in NormalizeSaved. Saves without a format already
 -- use format 1's layout.
 local SAVE_FORMAT = 1
 
--- A saved plan keeps only its talents: node, ranks and chosen entry.
+local function WholeNumber(value, low, high)
+	return type(value) == "number" and value % 1 == 0 and value >= low and value <= high
+end
+
+-- One saved talent: node, ranks and chosen entry, or nil when the entry is damaged.
+-- Ranks are whole points from 1 to the budget. The tree's own max ranks are not
+-- known until it is on screen; FitPlanToTree applies them.
+local function CleanNode(node)
+	if type(node) ~= "table" or not WholeNumber(node.nodeID, 1, math.huge) or not WholeNumber(node.ranks, 1, PLAN_BUDGET) then
+		return nil
+	end
+	return {
+		nodeID = node.nodeID,
+		ranks = node.ranks,
+		entryID = WholeNumber(node.entryID, 1, math.huge) and node.entryID or 0,
+	}
+end
+
+-- A saved plan keeps only its talents, each node once.
 local function CleanPlan(plan)
 	if type(plan) ~= "table" or type(plan.nodes) ~= "table" then
 		return nil
 	end
 	local nodes = {}
+	local seen = {}
 	for _, node in ipairs(plan.nodes) do
-		if type(node) == "table" and type(node.nodeID) == "number" and type(node.ranks) == "number" and node.ranks > 0 then
-			nodes[#nodes + 1] = {
-				nodeID = node.nodeID,
-				ranks = node.ranks,
-				entryID = type(node.entryID) == "number" and node.entryID or 0,
-			}
+		local clean = CleanNode(node)
+		if clean and not seen[clean.nodeID] then
+			seen[clean.nodeID] = true
+			nodes[#nodes + 1] = clean
 		end
 	end
 	return { nodes = nodes }
@@ -118,7 +126,6 @@ end
 -- Each character has two saved plans, Primary (1) and Secondary (2). They are
 -- the calculator's own slots, not the character's spec slots.
 local function SaveSlot(group, create)
-	EnsureSaved()
 	local key = CharacterKey()
 	if not key then
 		return nil
@@ -149,10 +156,11 @@ local function SavedRanks(group)
 	end
 	local ranks = {}
 	for _, node in ipairs(saved.nodes) do
-		if type(node) == "table" and type(node.nodeID) == "number" and type(node.ranks) == "number" and node.ranks > 0 then
-			ranks[node.nodeID] = {
-				ranks = node.ranks,
-				entryID = type(node.entryID) == "number" and node.entryID or 0,
+		local clean = CleanNode(node)
+		if clean and not ranks[clean.nodeID] then
+			ranks[clean.nodeID] = {
+				ranks = clean.ranks,
+				entryID = clean.entryID,
 			}
 		end
 	end
@@ -351,8 +359,7 @@ local function BuildComponents(frame, configID)
 			local groups = {}
 			if ok and type(costs) == "table" then
 				for _, cost in ipairs(costs) do
-					local currencyID = cost.ID or cost.traitCurrencyID
-					local groupID = currencyID and ns.currencyGroup[currencyID]
+					local groupID = ns.currencyGroup[cost.ID]
 					if groupID then
 						groups[#groups + 1] = groupID
 					end
@@ -943,13 +950,64 @@ local function Prune(affected)
 	until not removed
 end
 
--- The first point comes at level 10, then one point each level up to 60.
--- Zero points spent does not require level 10.
-local function LevelForSpent(spent)
-	if spent < 1 then
-		return 1
+local function ListHas(list, value)
+	for _, item in ipairs(list) do
+		if item == value then
+			return true
+		end
 	end
-	return math.min(MAX_LEVEL, FIRST_TALENT_LEVEL - 1 + spent)
+	return false
+end
+
+-- The talent on the lowest row, the highest node ID breaking a tie.
+local function DeepestPlannedNode()
+	local deepestID, deepestY
+	for nodeID in pairs(ns.ranks) do
+		local posY = ns.structure[nodeID].posY
+		if not deepestID or posY > deepestY or (posY == deepestY and nodeID > deepestID) then
+			deepestID, deepestY = nodeID, posY
+		end
+	end
+	return deepestID
+end
+
+-- A plan can come from an older tree: a later patch can lower a talent's max rank
+-- or remove a choice. The plan is fitted to the tree on screen: each talent is
+-- capped at its max rank, a choice the node no longer has becomes its first one,
+-- and points over the budget come off the deepest rows. Prune drops what no longer holds.
+local function FitPlanToTree()
+	for nodeID, stored in pairs(ns.ranks) do
+		local structure = ns.structure[nodeID]
+		if structure and structure.maxRanks > 0 then
+			stored.ranks = math.min(stored.ranks, structure.maxRanks)
+			local entryIDs = structure.entryIDs
+			if stored.entryID > 0 and entryIDs[1] and not ListHas(entryIDs, stored.entryID) then
+				stored.entryID = entryIDs[1]
+			end
+		elseif structure then
+			ns.ranks[nodeID] = nil
+		end
+	end
+	Prune()
+	while TotalSpent() > ns.budget do
+		local nodeID = DeepestPlannedNode()
+		local stored = ns.ranks[nodeID]
+		if stored.ranks > 1 then
+			stored.ranks = stored.ranks - 1
+		else
+			ns.ranks[nodeID] = nil
+		end
+		Prune()
+	end
+end
+
+-- The first point is spent at level 10, then one point each level up to 60.
+-- Until the first point is spent the label shows "-".
+local function LevelRequiredText(spent)
+	if spent < 1 then
+		return "-"
+	end
+	return tostring(math.min(MAX_LEVEL, FIRST_TALENT_LEVEL - 1 + spent))
 end
 
 local function LevelLabel(frame)
@@ -1108,7 +1166,7 @@ local function PaintSpent(frame)
 	end
 	local levelText = LevelLabel(frame)
 	if levelText then
-		levelText:SetText("Level required: " .. LevelForSpent(TotalSpent()))
+		levelText:SetText("Level required: " .. LevelRequiredText(TotalSpent()))
 		levelText:Show()
 	end
 	VersionLabel(frame):Show()
@@ -1214,10 +1272,6 @@ local function ResolvePlanEntries(frame, nodeID, nodeInfo)
 	else
 		if stored and stored.entryID and stored.entryID > 0 then
 			currentID = stored.entryID
-		elseif nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
-			currentID = nodeInfo.activeEntry.entryID
-		elseif nodeInfo.nextEntry and nodeInfo.nextEntry.entryID then
-			currentID = nodeInfo.nextEntry.entryID
 		elseif entryIDs then
 			currentID = entryIDs[1]
 		end
@@ -1307,7 +1361,6 @@ end
 
 local ChangeRank
 local ChooseEntry
-local RefundNode
 
 local function AddGateLine(tooltip, line)
 	if line and line ~= "" then
@@ -1500,7 +1553,10 @@ local function HideWidget(frame, widget)
 	end
 	frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
 	if frame.calculatorHiddenWidgets[widget] == nil then
-		frame.calculatorHiddenWidgets[widget] = widget:IsShown() and true or false
+		frame.calculatorHiddenWidgets[widget] = {
+			shown = widget:IsShown(),
+			mouse = widget:IsMouseEnabled(),
+		}
 	end
 	if widget.HookScript and not widget.calculatorKeepHidden then
 		widget.calculatorKeepHidden = true
@@ -1517,83 +1573,52 @@ local function HideWidget(frame, widget)
 	end
 end
 
-local function HideClientTree(frame)
-	frame.calculatorTreeHidden = true
+-- The talent buttons, arrows, gates and displays the game is using right now.
+local function EachTreeWidget(frame, visit)
 	for button in frame:EnumerateAllTalentButtons() do
-		HideWidget(frame, button)
+		visit(button)
 	end
 	for edge in frame.edgePool:EnumerateActive() do
-		HideWidget(frame, edge)
+		visit(edge)
 	end
 	for gate in frame.gatePool:EnumerateActive() do
-		HideWidget(frame, gate)
+		visit(gate)
 	end
 	for display in frame.talentDisplayFramePool:EnumerateActive() do
-		HideWidget(frame, display)
+		visit(display)
 	end
 end
 
+local function HideClientTree(frame)
+	frame.calculatorTreeHidden = true
+	EachTreeWidget(frame, function(widget)
+		HideWidget(frame, widget)
+	end)
+end
+
+-- The game can rebuild its tree while the calculator is open and put pieces back
+-- in its pools. Every piece gets its mouse setting back, but only pieces the game
+-- still uses are shown again. Gates the game refreshed meanwhile were skipped, since
+-- it draws gates only next to visible buttons, so they are redrawn.
 local function ShowClientTree(frame)
 	frame.calculatorTreeHidden = false
 	local hidden = frame.calculatorHiddenWidgets
 	frame.calculatorHiddenWidgets = nil
-	if not hidden then
-		return
-	end
-	for widget, wasShown in pairs(hidden) do
-		if widget.SetShown then
-			widget:SetShown(wasShown and true or false)
+	if hidden then
+		local inUse = {}
+		EachTreeWidget(frame, function(widget)
+			inUse[widget] = true
+		end)
+		for widget, state in pairs(hidden) do
+			widget:EnableMouse(state.mouse)
+			if inUse[widget] then
+				widget:SetShown(state.shown)
+			end
 		end
-		if wasShown and widget.EnableMouse then
-			widget:EnableMouse(true)
-		end
 	end
-end
-
-local function AttachPlanMethods(button, frame, nodeID)
-	button.calculatorFrame = frame
-	button.calculatorNodeID = nodeID
-	function button:GetNodeID()
-		return nodeID
-	end
-	function button:GetTalentFrame()
-		return frame
-	end
-	function button:CanPurchaseRank()
-		return CanAddRank(nodeID)
-	end
-	function button:CanAfford()
-		return Unspent() >= 1
-	end
-	function button:HasProgress()
-		return SourceRank(nodeID) > 0
-	end
-	function button:IsMaxed()
-		return SourceMaxed(nodeID)
-	end
-	function button:IsGated()
-		return ns.structure[nodeID] and not GateOpen(nodeID) or false
-	end
-	function button:IsLocked()
-		return ns.structure[nodeID] and not EdgesAllow(nodeID) or false
-	end
-	function button:IsDisplayError()
-		if SourceRank(nodeID) <= 0 then
-			return false
-		end
-		return not (EdgesAllow(nodeID) and GateOpen(nodeID))
-	end
-	function button:GetSpendText()
-		return PlanSpendText(frame, nodeID)
-	end
-	function button:IsRefundInvalid()
-		return PlanRefundInvalid(nodeID)
-	end
-	function button:Choose(entryID)
-		ChooseEntry(frame, nodeID, entryID)
-	end
-	function button:RefundAll()
-		RefundNode(frame, nodeID)
+	if frame.calculatorGatesStale then
+		frame.calculatorGatesStale = nil
+		frame:RefreshGates()
 	end
 end
 
@@ -1859,7 +1884,9 @@ end
 
 local function CreateNodeButton(frame, board, nodeID)
 	local button = CreatePlanButton(frame, board, nodeID)
-	AttachPlanMethods(button, frame, nodeID)
+	-- The tooltip reads these, and RefreshOpenTooltip finds plan buttons by them.
+	button.calculatorFrame = frame
+	button.calculatorNodeID = nodeID
 	button:SetScript("OnClick", function(_, mouseButton)
 		NodeClick(frame, nodeID, mouseButton)
 	end)
@@ -2309,7 +2336,7 @@ local function ShowPlan(frame)
 	if not next(ns.structure) then
 		RememberFrame(frame)
 	end
-	Prune()
+	FitPlanToTree()
 	HideClientTree(frame)
 	BuildBoard(frame)
 	HideLockedOverlay(frame)
@@ -2387,18 +2414,6 @@ function ChooseEntry(frame, nodeID, entryID)
 		ranks = nextRanks,
 		entryID = chosen,
 	}
-	ApplyLocalChange(frame, nodeID, (unspentBefore == 0) ~= (Unspent() == 0))
-end
-
-function RefundNode(frame, nodeID)
-	if not ShowingCalculator(frame) or not nodeID then
-		return
-	end
-	if not SelectionStaysLegal(nodeID, 0) then
-		return
-	end
-	local unspentBefore = Unspent()
-	ns.ranks[nodeID] = nil
 	ApplyLocalChange(frame, nodeID, (unspentBefore == 0) ~= (Unspent() == 0))
 end
 
@@ -2622,11 +2637,7 @@ local function SaveBuild()
 	end
 	build.nodes = nodes
 	RememberCurrentPlan()
-	local savedWord = "build saved."
-	if type(SAVE) == "string" and SAVE ~= "" then
-		savedWord = SAVE
-	end
-	print(addonName .. " " .. savedWord)
+	print(addonName .. " plan saved.")
 end
 
 local function ClearBuild(frame)
@@ -2776,9 +2787,14 @@ local function OpenCalculatorTab(frame)
 	end
 	if not EnterCalculator(frame) then
 		ReturnToActiveTab(frame)
-		return
 	end
-	frame:UpdateTabs()
+end
+
+-- The calculator plans the player's own tree, so its tab is off while inspecting.
+-- The tab then cannot be picked, and the switch back above is only for errors.
+local function UpdateCalculatorTab(frame)
+	local inspecting = frame:IsInspecting()
+	frame.TabSystem:SetTabEnabled(frame.calculatorTabID, not inspecting, inspecting and "Not available while inspecting." or nil)
 end
 
 -- Every hook here runs after Blizzard's own function and leaves that function in
@@ -2791,10 +2807,16 @@ local function Install(frame)
 
 	frame.calculatorTabID = frame:AddNamedTab("Talent Calculator")
 	local calculatorTab = frame.TabSystem:GetTabButton(frame.calculatorTabID)
-	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab is not a spec.
-	calculatorTab.GetTabText = function(self)
-		return TabSystemButtonMixin.GetTabText(self)
-	end
+	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab
+	-- is not a spec, so its label is written again, without the lock or checkmark,
+	-- after the game writes it. Only a turned-off tab gets the disabled color.
+	hooksecurefunc(calculatorTab, "UpdateTabText", function(self)
+		local text = TabSystemButtonMixin.GetTabText(self)
+		if self:IsForceDisabled() then
+			text = DISABLED_FONT_COLOR:WrapTextInColorCode(text)
+		end
+		self.Text:SetText(text)
+	end)
 	CreateButtons(frame)
 
 	-- Tab clicks run the SetTab the frame captured when it was made. That SetTab
@@ -2812,9 +2834,10 @@ local function Install(frame)
 	end)
 
 	hooksecurefunc(frame, "UpdateTabs", function(self)
-		self.TabSystem:SetTabEnabled(self.calculatorTabID, true)
+		UpdateCalculatorTab(self)
 		UpdateSlotDropdown(self)
 	end)
+	hooksecurefunc(frame, "UpdateInspecting", UpdateCalculatorTab)
 
 	-- The calculator tab has no spec config, so SetTab shows the locked-spec overlay.
 	hooksecurefunc(frame, "SetDisabledOverlayShown", function(self, shown)
@@ -2839,7 +2862,13 @@ local function Install(frame)
 		end
 	end
 	hooksecurefunc(frame, "RefreshConfigID", KeepTreeHidden)
-	hooksecurefunc(frame, "RefreshGates", KeepTreeHidden)
+	-- The game drew no gates for its hidden buttons. ShowClientTree redraws them.
+	hooksecurefunc(frame, "RefreshGates", function(self)
+		if ShowingCalculator(self) then
+			self.calculatorGatesStale = true
+			HideClientTree(self)
+		end
+	end)
 
 	-- These put the character's point totals back on the currency display and tree headers.
 	local function KeepPlanNumbers(self)
@@ -2869,6 +2898,17 @@ local function Install(frame)
 		return type(name) == "string" and name ~= "" and string.find(string.lower(name), query, 1, true) ~= nil
 	end
 
+	-- A talent's name does not change during a session. It is kept once the spell data has it.
+	local entryNames = {}
+	local function EntryName(self, entryID)
+		local name = entryNames[entryID]
+		if not name then
+			name = EntryVisual(self, entryID).name
+			entryNames[entryID] = name
+		end
+		return name
+	end
+
 	local function ApplyPlanSearch(self)
 		local query = committedQuery and string.lower(committedQuery) or ""
 		for _, button in pairs(self.calculatorNodes or {}) do
@@ -2881,8 +2921,7 @@ local function Install(frame)
 				-- A choice node matches any of its entries, including one that is not selected.
 				if not matched and structure and structure.entryIDs then
 					for _, entryID in ipairs(structure.entryIDs) do
-						local visual = EntryVisual(self, entryID)
-						if NameMatches(visual and visual.name, query) then
+						if NameMatches(EntryName(self, entryID), query) then
 							matched = true
 							break
 						end

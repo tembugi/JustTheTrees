@@ -16,7 +16,7 @@ A mock talent planner in its own "Talent Calculator" tab on the talent window: s
 ## Points
 
 - Budget: 51 points, one per level from 10 to 60 (`PLAN_BUDGET`).
-- "Level required" label: 9 + points spent, capped at 60.
+- "Level required" label: "-" until the first point is spent (the first point is spent at level 10), then 9 + points spent, capped at 60.
 - No level-locked talents: only the row rule below opens rows.
 
 ## Rows
@@ -29,5 +29,6 @@ A mock talent planner in its own "Talent Calculator" tab on the talent window: s
 
 - Per character (name-realm), two independent plans: Primary (`build`) and Secondary (`secondary`). They are the calculator's own slots, not the character's spec slots, and not tied to a spec id.
 - Primary is shown first. Unsaved edits are kept per slot for the session.
-- `NormalizeSaved` rebuilds `TalentCalculatorDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`.
+- `NormalizeSaved` rebuilds `TalentCalculatorDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
+- A plan shown on the tree is fitted to it (`FitPlanToTree`): ranks capped at the talent's max, a choice the node no longer has becomes its first one, and points over the budget come off the deepest rows.
 - Own class only.
