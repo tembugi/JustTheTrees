@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.2.4"
+local VERSION = "0.3.0"
 
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
@@ -113,6 +113,19 @@ local function CharacterKey()
 		return name
 	end
 	return name .. "-" .. realm
+end
+
+local function SlotText(group)
+	if group == 2 then
+		return "Secondary"
+	end
+	return "Primary"
+end
+
+-- Every chat line starts with the addon's name in gold. The addon writes to chat only
+-- after a button press or when something changed that the player did not ask for.
+local function Say(message)
+	print(NORMAL_FONT_COLOR:WrapTextInColorCode("Talent Calculator") .. ": " .. message)
 end
 
 local function ActiveSpecGroup()
@@ -975,23 +988,48 @@ end
 -- or remove a choice. The plan is fitted to the tree on screen: each talent is
 -- capped at its max rank, a choice the node no longer has becomes its first one,
 -- and points over the budget come off the deepest rows. Prune drops what no longer holds.
+-- Returns what changed, one entry per talent, for ReportPlanFit, with every reason
+-- the talent lost points, in order: "tree", "max", "budget", and "requirements"
+-- when Prune took more than those steps did.
 local function FitPlanToTree()
+	local before = {}
+	local reasons = {}
+	local expected = {}
+	local newEntries = {}
+	local function Note(nodeID, reason)
+		local list = reasons[nodeID] or {}
+		reasons[nodeID] = list
+		if list[#list] ~= reason then
+			list[#list + 1] = reason
+		end
+	end
 	for nodeID, stored in pairs(ns.ranks) do
+		before[nodeID] = { ranks = stored.ranks, entryID = stored.entryID }
+		expected[nodeID] = stored.ranks
 		local structure = ns.structure[nodeID]
-		if structure and structure.maxRanks > 0 then
-			stored.ranks = math.min(stored.ranks, structure.maxRanks)
+		if not structure or structure.maxRanks <= 0 then
+			Note(nodeID, "tree")
+			expected[nodeID] = 0
+			ns.ranks[nodeID] = nil
+		else
+			if stored.ranks > structure.maxRanks then
+				stored.ranks = structure.maxRanks
+				expected[nodeID] = structure.maxRanks
+				Note(nodeID, "max")
+			end
 			local entryIDs = structure.entryIDs
 			if stored.entryID > 0 and entryIDs[1] and not ListHas(entryIDs, stored.entryID) then
 				stored.entryID = entryIDs[1]
+				newEntries[nodeID] = entryIDs[1]
 			end
-		elseif structure then
-			ns.ranks[nodeID] = nil
 		end
 	end
 	Prune()
 	while TotalSpent() > ns.budget do
 		local nodeID = DeepestPlannedNode()
 		local stored = ns.ranks[nodeID]
+		Note(nodeID, "budget")
+		expected[nodeID] = expected[nodeID] - 1
 		if stored.ranks > 1 then
 			stored.ranks = stored.ranks - 1
 		else
@@ -999,6 +1037,29 @@ local function FitPlanToTree()
 		end
 		Prune()
 	end
+
+	local changes = {}
+	for nodeID, old in pairs(before) do
+		local now = ns.ranks[nodeID]
+		local ranks = now and now.ranks or 0
+		if ranks < expected[nodeID] then
+			Note(nodeID, "requirements")
+		end
+		if ranks ~= old.ranks or newEntries[nodeID] then
+			changes[#changes + 1] = {
+				nodeID = nodeID,
+				entryID = old.entryID,
+				from = old.ranks,
+				to = ranks,
+				reasons = reasons[nodeID] or {},
+				newEntryID = newEntries[nodeID],
+			}
+		end
+	end
+	table.sort(changes, function(left, right)
+		return left.nodeID < right.nodeID
+	end)
+	return changes
 end
 
 -- The first point is spent at level 10, then one point each level up to 60.
@@ -2332,11 +2393,66 @@ function BuildGates(frame)
 	end
 end
 
+local FIT_REASONS = {
+	tree = "no longer in the tree",
+	max = "max rank lowered",
+	budget = "over " .. PLAN_BUDGET .. " points",
+	requirements = "row or arrow requirement no longer met",
+}
+local MAX_LISTED_CHANGES = 3
+
+-- The talent's name for the chosen entry, or its first entry. A talent removed
+-- from the game has no name left to read.
+local function TalentName(frame, nodeID, entryID, unknown)
+	local structure = ns.structure[nodeID]
+	local shownID = entryID and entryID > 0 and entryID or (structure and structure.entryIDs[1])
+	return shownID and EntryVisual(frame, shownID).name or unknown
+end
+
+local function DescribeChange(frame, change)
+	local reasonTexts = {}
+	for index, reason in ipairs(change.reasons) do
+		reasonTexts[index] = FIT_REASONS[reason]
+	end
+	local reason = table.concat(reasonTexts, ", ")
+	local newName = change.newEntryID and TalentName(frame, change.nodeID, change.newEntryID, "a talent")
+	if change.newEntryID and change.to == change.from then
+		return newName .. " replaces " .. TalentName(frame, change.nodeID, change.entryID, "a removed choice") .. " (choice no longer exists)"
+	end
+	-- A replaced choice that also lost points is named by its new choice.
+	local name = newName or TalentName(frame, change.nodeID, change.entryID, "a talent")
+	if change.to == 0 then
+		return name .. " removed (" .. reason .. ")"
+	end
+	return string.format("%s from %d to %d ranks (%s)", name, change.from, change.to, reason)
+end
+
+-- One chat line when fitting changed the plan on screen, naming the first few talents.
+local function ReportPlanFit(frame, changes)
+	if not changes[1] then
+		return
+	end
+	local listed = {}
+	for index = 1, math.min(#changes, MAX_LISTED_CHANGES) do
+		listed[index] = DescribeChange(frame, changes[index])
+	end
+	local text = table.concat(listed, ", ")
+	if #changes > MAX_LISTED_CHANGES then
+		text = text .. " and " .. (#changes - MAX_LISTED_CHANGES) .. " more"
+	end
+	Say(SlotText(ns.slot or 1) .. " plan changed to fit the current talents: " .. text .. ". Press Save to keep it.")
+end
+
 local function ShowPlan(frame)
 	if not next(ns.structure) then
 		RememberFrame(frame)
 	end
-	FitPlanToTree()
+	-- Without the tree nothing can be checked, so the plan is kept as it is.
+	if next(ns.structure) then
+		ReportPlanFit(frame, FitPlanToTree())
+	else
+		Say("couldn't read the talent tree. Close and reopen the talent window.")
+	end
 	HideClientTree(frame)
 	BuildBoard(frame)
 	HideLockedOverlay(frame)
@@ -2426,13 +2542,6 @@ local function ClientText(globalName, fallback)
 		return value
 	end
 	return fallback
-end
-
-local function SlotText(group)
-	if group == 2 then
-		return "Secondary"
-	end
-	return "Primary"
 end
 
 local function UpdateSlotDropdown(frame)
@@ -2619,7 +2728,9 @@ end
 
 local function SaveBuild()
 	local build = SaveSlot(ns.slot or 1, true)
+	-- Plans are saved per character, and the name can be missing right after login.
 	if not build then
+		Say("could not save, your character isn't fully loaded yet. Try again in a moment.")
 		return
 	end
 	for key in pairs(build) do
@@ -2637,7 +2748,7 @@ local function SaveBuild()
 	end
 	build.nodes = nodes
 	RememberCurrentPlan()
-	print(addonName .. " plan saved.")
+	Say(string.format("%s plan saved (%d/%d points).", SlotText(ns.slot or 1), TotalSpent(), ns.budget))
 end
 
 local function ClearBuild(frame)
@@ -2648,7 +2759,7 @@ local function ClearBuild(frame)
 		HideRealActions(frame)
 	end
 	RememberCurrentPlan()
-	print(addonName .. " plan cleared.")
+	Say(SlotText(ns.slot or 1) .. " plan cleared. Your saved plan is unchanged until you press Save.")
 end
 
 local function LoadSavedPlan(frame)
@@ -2656,14 +2767,20 @@ local function LoadSavedPlan(frame)
 	if not HasSavedBuild() then
 		return
 	end
+	local hadChanges = not PlanMatchesSaved()
 	LoadSavedRanks(group)
 	ns.loadedSlot = group
+	-- Said before ShowPlan, so a line about fitting the plan to the tree comes after it.
+	local message = string.format("saved %s plan loaded (%d/%d points).", SlotText(group), TotalSpent(), ns.budget)
+	if hadChanges then
+		message = message .. " Unsaved changes were discarded."
+	end
+	Say(message)
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
 		HideRealActions(frame)
 	end
 	RememberCurrentPlan()
-	print(addonName .. " saved build loaded.")
 end
 
 local function CreateButtons(frame)
@@ -2780,12 +2897,13 @@ local function ReturnToActiveTab(frame)
 end
 
 local function OpenCalculatorTab(frame)
+	-- The tab is turned off while inspecting, so this is only a safety net.
 	if frame:IsInspecting() then
-		print(addonName .. " is not available while inspecting.")
 		ReturnToActiveTab(frame)
 		return
 	end
 	if not EnterCalculator(frame) then
+		Say("couldn't open, returned to your talents.")
 		ReturnToActiveTab(frame)
 	end
 end
