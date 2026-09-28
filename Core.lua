@@ -2163,13 +2163,9 @@ local function ApplyLocalChange(frame, originID, poolChanged)
 	end
 end
 
+-- TalentFrameBaseMixin:SetDisabledOverlayShown only shows or hides this overlay.
 local function HideLockedOverlay(frame)
-	local original = frame.talentCalculatorOverlayShown
-	if original then
-		original(frame, false)
-	elseif frame.DisabledOverlay then
-		frame.DisabledOverlay:Hide()
-	end
+	frame.DisabledOverlay:Hide()
 end
 
 -- The number on a gate stays while any talent that gate locks still needs those points.
@@ -2687,178 +2683,113 @@ local function CreateButtons(frame)
 	UpdateSlotDropdown(frame)
 end
 
-local function BlockOriginal(frame, methodName)
-	local original = frame[methodName]
-	if type(original) ~= "function" then
-		return
-	end
-	frame[methodName] = function(self, ...)
-		if ShowingCalculator(self) then
-			return
+-- Opening the tab can fail (inspecting, or an error while drawing the plan).
+-- The tab change is still running then, so the switch back waits one frame.
+local function ReturnToActiveTab(frame)
+	RestoreSharedTree(frame)
+	C_Timer.After(0, function()
+		if frame:GetTab() == frame.calculatorTabID then
+			frame:SetTab(frame:GetActiveTab())
 		end
-		return original(self, ...)
-	end
+	end)
 end
 
+local function OpenCalculatorTab(frame)
+	if frame:IsInspecting() then
+		print(addonName .. " is not available while inspecting.")
+		ReturnToActiveTab(frame)
+		return
+	end
+	if not EnterCalculator(frame) then
+		ReturnToActiveTab(frame)
+		return
+	end
+	frame:UpdateTabs()
+end
+
+-- Every hook here runs after Blizzard's own function and leaves that function in
+-- place. hooksecurefunc keeps the addon's code out of the talent frame's own work,
+-- so applying talents and switching specs run untainted.
 local function Install(frame)
 	if frame.calculatorTabID then
 		return
 	end
 
 	frame.calculatorTabID = frame:AddNamedTab("Talent Calculator")
-	local tabSystem = frame.TabSystem or frame.tabSystem
-	local calculatorTab = tabSystem and tabSystem.GetTabButton and tabSystem:GetTabButton(frame.calculatorTabID)
-	if calculatorTab then
-		-- A selected spec tab is disabled, and that disabled state draws the lock. This tab is not a spec.
-		calculatorTab.GetTabText = function(self)
-			return TabSystemButtonMixin.GetTabText(self)
-		end
-	end
-	local originalUpdateTabs = frame.UpdateTabs
-	if originalUpdateTabs then
-		frame.UpdateTabs = function(self)
-			originalUpdateTabs(self)
-			local tabs = self.TabSystem or self.tabSystem
-			if tabs and tabs.SetTabEnabled then
-				tabs:SetTabEnabled(self.calculatorTabID, true)
-			end
-			UpdateSlotDropdown(self)
-		end
+	local calculatorTab = frame.TabSystem:GetTabButton(frame.calculatorTabID)
+	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab is not a spec.
+	calculatorTab.GetTabText = function(self)
+		return TabSystemButtonMixin.GetTabText(self)
 	end
 	CreateButtons(frame)
 
-	local originalInstantiate = frame.InstantiateTalentButton
-	if originalInstantiate then
-		frame.InstantiateTalentButton = function(self, ...)
-			local button = originalInstantiate(self, ...)
-			if ShowingCalculator(self) then
+	-- Tab clicks run the SetTab the frame captured when it was made. That SetTab
+	-- calls TabSystemOwnerMixin.SetTab, so this hook sees every tab change.
+	-- It runs before the frame loads the new tab's config.
+	hooksecurefunc(TabSystemOwnerMixin, "SetTab", function(owner, tabID)
+		if owner ~= frame then
+			return
+		end
+		if tabID == frame.calculatorTabID then
+			OpenCalculatorTab(frame)
+		elseif frame.calculatorMode then
+			RestoreSharedTree(frame)
+		end
+	end)
+
+	hooksecurefunc(frame, "UpdateTabs", function(self)
+		self.TabSystem:SetTabEnabled(self.calculatorTabID, true)
+		UpdateSlotDropdown(self)
+	end)
+
+	-- The calculator tab has no spec config, so SetTab shows the locked-spec overlay.
+	hooksecurefunc(frame, "SetDisabledOverlayShown", function(self, shown)
+		if shown and ShowingCalculator(self) then
+			HideLockedOverlay(self)
+		end
+	end)
+
+	-- The character's tree can reload under the calculator. Its buttons stay hidden.
+	hooksecurefunc(frame, "InstantiateTalentButton", function(self, nodeID)
+		if ShowingCalculator(self) then
+			local button = self:GetTalentButtonByNodeID(nodeID)
+			if button then
 				HideWidget(self, button)
 			end
-			return button
 		end
-	end
+	end)
 
-	local originalSetTab = frame.SetTab
-	frame.SetTab = function(self, tabID, forcedOpen)
-		if tabID == self.calculatorTabID then
-			if self:IsInspecting() then
-				print(addonName .. " is not available while inspecting.")
-				return true
-			end
-			-- Set this before the tab changes so the spec lock overlay stays down.
-			self.calculatorMode = true
-			TabSystemOwnerMixin.SetTab(self, tabID)
-			if not EnterCalculator(self) then
-				self.calculatorMode = false
-				local activeTab = self.GetActiveTab and self:GetActiveTab()
-				if activeTab then
-					originalSetTab(self, activeTab, forcedOpen)
-				end
-				RestoreSharedTree(self)
-			elseif self.UpdateTabs then
-				self:UpdateTabs()
-			end
-			-- True tells the tab button this click already selected its tab.
-			return true
-		end
-		if self.calculatorMode then
-			self.calculatorMode = false
-			originalSetTab(self, tabID, forcedOpen)
-			RestoreSharedTree(self)
-			return true
-		end
-		originalSetTab(self, tabID, forcedOpen)
-		return true
-	end
-
-	-- Tab clicks call the SetTab closure captured when this frame was created.
-	-- Register this replacement or the calculator tab stays on the locked-spec overlay.
-	local tabSystem = frame.tabSystem or frame.TabSystem
-	if tabSystem and tabSystem.SetTabSelectedCallback then
-		local setTab = frame.SetTab
-		tabSystem:SetTabSelectedCallback(function(tabID, isUserAction)
-			return setTab(frame, tabID, isUserAction)
-		end)
-	end
-
-	local originalOverlay = frame.SetDisabledOverlayShown
-	if originalOverlay then
-		frame.talentCalculatorOverlayShown = originalOverlay
-		frame.SetDisabledOverlayShown = function(self, shown)
-			if ShowingCalculator(self) then
-				return originalOverlay(self, false)
-			end
-			return originalOverlay(self, shown)
-		end
-	end
-
-	BlockOriginal(frame, "PurchaseRank")
-	BlockOriginal(frame, "RefundRank")
-	BlockOriginal(frame, "RefundAllRanks")
-	BlockOriginal(frame, "SetSelection")
-
-	local originalRefresh = frame.RefreshConfigID
-	frame.RefreshConfigID = function(self)
-		if enteringCalculator then
-			return
-		end
+	local function KeepTreeHidden(self)
 		if ShowingCalculator(self) then
 			HideClientTree(self)
-			return
-		end
-		return originalRefresh(self)
-	end
-
-	local originalCurrency = frame.RefreshClassCurrencyDisplay
-	if originalCurrency then
-		frame.RefreshClassCurrencyDisplay = function(self)
-			originalCurrency(self)
-			if ShowingCalculator(self) then
-				PaintSpent(self)
-				HideClientTree(self)
-			end
 		end
 	end
+	hooksecurefunc(frame, "RefreshConfigID", KeepTreeHidden)
+	hooksecurefunc(frame, "RefreshGates", KeepTreeHidden)
 
-	local originalHeaders = frame.RefreshTreeHeaders
-	if originalHeaders then
-		frame.RefreshTreeHeaders = function(self)
-			originalHeaders(self)
-			if ShowingCalculator(self) then
-				PaintSpent(self)
-				HideClientTree(self)
-			end
+	-- These put the character's point totals back on the currency display and tree headers.
+	local function KeepPlanNumbers(self)
+		if ShowingCalculator(self) then
+			PaintSpent(self)
+			HideClientTree(self)
 		end
 	end
+	hooksecurefunc(frame, "RefreshClassCurrencyDisplay", KeepPlanNumbers)
+	hooksecurefunc(frame, "RefreshTreeHeaders", KeepPlanNumbers)
 
-	local originalGates = frame.RefreshGates
-	if originalGates then
-		frame.RefreshGates = function(self)
-			originalGates(self)
-			if ShowingCalculator(self) then
-				HideClientTree(self)
-			end
+	-- These show Apply, Undo, Reset and the spec controls again.
+	local function KeepRealActionsHidden(self)
+		if ShowingCalculator(self) then
+			HideRealActions(self)
+			HideClientTree(self)
 		end
 	end
+	hooksecurefunc(frame, "UpdateConfigButtonsState", KeepRealActionsHidden)
+	hooksecurefunc(frame, "HandlePlayerTalentUpdate", KeepRealActionsHidden)
+	hooksecurefunc(frame, "UpdateInspecting", KeepRealActionsHidden)
 
-	-- The clear button and Enter call SetFullResultSearch before the box text changes.
 	-- A nil or short search is inactive even while the box still holds the old query.
 	local committedQuery = nil
-	local function CommitFullSearch(searchText)
-		if type(searchText) == "string" and strlen(searchText) >= MIN_CHARACTER_SEARCH then
-			committedQuery = searchText
-		else
-			committedQuery = nil
-		end
-	end
-
-	if frame.SetFullResultSearch then
-		local originalFullSearch = frame.SetFullResultSearch
-		frame.SetFullResultSearch = function(self, searchText, ...)
-			CommitFullSearch(searchText)
-			return originalFullSearch(self, searchText, ...)
-		end
-	end
 
 	local function NameMatches(name, query)
 		return type(name) == "string" and name ~= "" and string.find(string.lower(name), query, 1, true) ~= nil
@@ -2896,106 +2827,33 @@ local function Install(frame)
 		end
 	end
 
-	if frame.DisplayFullSearchResults then
-		local originalSearch = frame.DisplayFullSearchResults
-		frame.DisplayFullSearchResults = function(self)
-			originalSearch(self)
-			if ShowingCalculator(self) then
-				ApplyPlanSearch(self)
-				HideClientTree(self)
-			end
+	-- SetFullResultSearch displays its results before it returns, while the query
+	-- here is still the old one. The plan's marks are redrawn with the new query.
+	hooksecurefunc(frame, "SetFullResultSearch", function(self, searchText)
+		if type(searchText) == "string" and strlen(searchText) >= MIN_CHARACTER_SEARCH then
+			committedQuery = searchText
+		else
+			committedQuery = nil
 		end
-	end
-
-	local function ResumeCalculator(self)
-		if not ShowingCalculator(self) or not self:IsShown() then
-			return
-		end
-		ShowPlan(self)
-		HideRealActions(self)
-	end
-	frame:HookScript("OnShow", ResumeCalculator)
-
-	local originalButtons = frame.UpdateConfigButtonsState
-	frame.UpdateConfigButtonsState = function(self)
 		if ShowingCalculator(self) then
-			HideRealActions(self)
-			return
+			ApplyPlanSearch(self)
 		end
-		return originalButtons(self)
-	end
-
-	local originalCheck = frame.CheckSetSelectedConfigID
-	frame.CheckSetSelectedConfigID = function(self)
+	end)
+	hooksecurefunc(frame, "DisplayFullSearchResults", function(self)
 		if ShowingCalculator(self) then
-			return
-		end
-		return originalCheck(self)
-	end
-
-	local originalTalentUpdate = frame.HandlePlayerTalentUpdate
-	frame.HandlePlayerTalentUpdate = function(self)
-		if ShowingCalculator(self) then
-			if self.UpdateTabs then
-				self:UpdateTabs()
-			end
-			HideRealActions(self)
+			ApplyPlanSearch(self)
 			HideClientTree(self)
-			return
 		end
-		return originalTalentUpdate(self)
-	end
+	end)
 
-	local originalInspect = frame.UpdateInspecting
-	if originalInspect then
-		frame.UpdateInspecting = function(self)
-			originalInspect(self)
-			if ShowingCalculator(self) then
-				HideRealActions(self)
-			end
+	frame:HookScript("OnShow", function(self)
+		if ShowingCalculator(self) and self:IsShown() then
+			ShowPlan(self)
+			HideRealActions(self)
 		end
-	end
+	end)
 
-	local function IgnoreWhileCalculating(button)
-		local originalClick = button:GetScript("OnClick")
-		if originalClick then
-			button:SetScript("OnClick", function(self, ...)
-				if ShowingCalculator(frame) then
-					return
-				end
-				return originalClick(self, ...)
-			end)
-		end
-
-		-- UIButtonMixin stores the real action here. That closure calls Apply, Undo, or Reset directly.
-		if type(button.onClickHandler) == "function" then
-			local originalHandler = button.onClickHandler
-			button.onClickHandler = function(self, ...)
-				if ShowingCalculator(frame) then
-					return
-				end
-				return originalHandler(self, ...)
-			end
-		end
-	end
-	IgnoreWhileCalculating(frame.ApplyButton)
-	IgnoreWhileCalculating(frame.UndoButton)
-	IgnoreWhileCalculating(frame.ResetButton)
-
-	BlockOriginal(frame, "ApplyConfig")
-	BlockOriginal(frame, "CommitConfig")
-	BlockOriginal(frame, "CommitConfigInternal")
-	BlockOriginal(frame, "RollbackConfig")
-	BlockOriginal(frame, "ResetTree")
-	BlockOriginal(frame, "ResetClassTalents")
-	BlockOriginal(frame, "ResetSpecTalents")
-	BlockOriginal(frame, "LoadConfigInternal")
-	BlockOriginal(frame, "SetSelectedSavedConfigID")
-	BlockOriginal(frame, "OnConfigChanged")
-
-	if frame.UpdateTabs then
-		frame:UpdateTabs()
-	end
+	frame:UpdateTabs()
 end
 
 local function TryInstall()
