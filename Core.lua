@@ -4,6 +4,8 @@ local addonName, ns = ...
 local MAX_LEVEL = 60
 local FIRST_TALENT_LEVEL = 10
 local PLAN_BUDGET = MAX_LEVEL - FIRST_TALENT_LEVEL + 1
+-- Talents whose posY differs by no more than this sit on the same row.
+local ROW_TOLERANCE = 0.5
 
 local TALENT_UI = "Blizzard_PlayerSpells"
 local REQUIRED_EDGE
@@ -19,9 +21,9 @@ end
 ns.ranks = {}
 ns.structure = {}
 ns.incoming = {}
-ns.loadedGroup = nil
-ns.specGroup = nil
-ns.planByGroup = {}
+ns.loadedSlot = nil
+ns.slot = nil
+ns.planBySlot = {}
 ns.budget = PLAN_BUDGET
 
 -- Primary and Secondary use this same frame. Calculator behavior runs only
@@ -450,7 +452,7 @@ local function IsAbove(upper, lower)
 	if not upper or not lower or upper.posY == nil or lower.posY == nil then
 		return false
 	end
-	return upper.posY < lower.posY - 0.5
+	return upper.posY < lower.posY - ROW_TOLERANCE
 end
 
 -- A row opens from points on earlier rows of the same tree only. Points on that
@@ -603,40 +605,14 @@ local function RebuildIncoming()
 	end
 end
 
-local function ConfigIDForGroup(frame, group)
-	group = group or ns.specGroup or 1
-	if C_SpecializationInfo and C_SpecializationInfo.GetCombatConfigIDForSpecGroup then
-		local tabID = group
-		if frame then
-			if group == 1 and frame.primarySpecTabID then
-				tabID = frame.primarySpecTabID
-			elseif group == 2 and frame.secondarySpecTabID then
-				tabID = frame.secondarySpecTabID
-			end
-		end
-		local configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(tabID)
-		if not configID and tabID ~= group then
-			configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(group)
-		end
-		if configID then
-			return configID
-		end
-	end
-	if group == ActiveSpecGroup() and frame and frame.GetConfigID then
-		return frame:GetConfigID()
-	end
-	return nil
-end
-
--- Primary and Secondary are two saved plans. Both read the tree currently on screen.
+-- Primary and Secondary are the calculator's own slots. Both read the tree on
+-- screen. Before the frame has a config, the active spec's config has the same tree.
 local function PlanConfigID(frame)
-	if frame and frame.GetConfigID then
-		local configID = frame:GetConfigID()
-		if configID then
-			return configID
-		end
+	local configID = frame and frame:GetConfigID()
+	if configID then
+		return configID
 	end
-	return ConfigIDForGroup(frame, ns.specGroup or 1)
+	return C_SpecializationInfo.GetCombatConfigIDForSpecGroup(ActiveSpecGroup())
 end
 
 local function PlanTreeID(frame, configID)
@@ -704,7 +680,7 @@ local function ApplyRowRequirements(frame)
 			end
 			local known = false
 			for _, rowY in ipairs(rows) do
-				if math.abs(rowY - structure.posY) <= 0.5 then
+				if math.abs(rowY - structure.posY) <= ROW_TOLERANCE then
 					known = true
 					break
 				end
@@ -720,7 +696,7 @@ local function ApplyRowRequirements(frame)
 	for nodeID, structure in pairs(ns.structure) do
 		if structure.maxRanks > 0 then
 			for index, rowY in ipairs(rowsOf[RepOf(nodeID)]) do
-				if math.abs(rowY - structure.posY) <= 0.5 then
+				if math.abs(rowY - structure.posY) <= ROW_TOLERANCE then
 					if index > 1 then
 						structure.requiredSpent = (index - 1) * POINTS_PER_ROW
 					end
@@ -896,15 +872,38 @@ local function SelectionStaysLegal(nodeID, ranks)
 	return allowed
 end
 
-local function Prune()
-	local removed = false
-	for nodeID in pairs(ns.ranks) do
-		if not RankHolds(nodeID) then
-			ns.ranks[nodeID] = nil
-			removed = true
+local function MarkOutgoing(affected, nodeID)
+	if not nodeID then
+		return
+	end
+	affected[nodeID] = true
+	local structure = ns.structure[nodeID]
+	if not structure or not structure.edges then
+		return
+	end
+	for _, edge in ipairs(structure.edges) do
+		if edge.target then
+			affected[edge.target] = true
 		end
 	end
-	return removed
+end
+
+-- Removes every rank that no longer holds. A removal can break the talents that
+-- depend on it, so this repeats until nothing changes. Removed talents and the
+-- talents their arrows point to are marked in affected, when given.
+local function Prune(affected)
+	repeat
+		local removed = false
+		for nodeID in pairs(ns.ranks) do
+			if not RankHolds(nodeID) then
+				ns.ranks[nodeID] = nil
+				if affected then
+					MarkOutgoing(affected, nodeID)
+				end
+				removed = true
+			end
+		end
+	until not removed
 end
 
 -- The first point comes at level 10, then one point each level up to 60.
@@ -933,7 +932,7 @@ local function LevelLabel(frame)
 end
 
 local function PlanMatchesSaved()
-	local savedRanks = SavedRanks(ns.specGroup or 1) or {}
+	local savedRanks = SavedRanks(ns.slot or 1) or {}
 	for nodeID, stored in pairs(ns.ranks) do
 		local ranks = stored.ranks or 0
 		if ranks > 0 then
@@ -948,7 +947,7 @@ local function PlanMatchesSaved()
 end
 
 local function HasSavedBuild()
-	return SavedRanks(ns.specGroup or 1) ~= nil
+	return SavedRanks(ns.slot or 1) ~= nil
 end
 
 local function UpdateSaveButton(frame)
@@ -1418,9 +1417,6 @@ local function ShowNodeTooltip(button)
 		currentID = button.entryID
 		currentRank = (ns.ranks[nodeID] and ns.ranks[nodeID].entryID == button.entryID) and ranks or 0
 	end
-	button.tooltipRank = ranks
-	button.tooltipEntry = currentID and { entryID = currentID, rank = currentRank or 0 } or nil
-	button.tooltipNext = nextID and { entryID = nextID, rank = nextRank } or nil
 	GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
 	local visual = button.entryVisual
 	local definition = visual and visual.definition
@@ -1892,18 +1888,14 @@ local function SearchMatchAtlas()
 	return "talents-search-match"
 end
 
-local function CreateNodeButton(frame, board, nodeID)
+-- The layers every plan button draws, sized like the talent button it stands for.
+local function CreatePlanButton(frame, board, nodeID)
 	local button = CreateFrame("Button", nil, board)
 	local size = ButtonSize(frame)
 	if size then
 		button:SetSize(size, size)
 	end
-	AttachPlanMethods(button, frame, nodeID)
 	button:RegisterForClicks("LeftButtonDown", "RightButtonDown")
-	button:SetScript("OnClick", function(_, mouseButton)
-		NodeClick(frame, nodeID, mouseButton)
-	end)
-	button:SetScript("OnEnter", ShowNodeTooltip)
 	if GameTooltip_Hide then
 		button:SetScript("OnLeave", GameTooltip_Hide)
 	end
@@ -1924,9 +1916,20 @@ local function CreateNodeButton(frame, board, nodeID)
 	local border = button:CreateTexture(nil, "OVERLAY")
 	border:SetAllPoints(button)
 	button.border = border
+	MatchIcon(icon, shade, LiveButton(frame, nodeID))
+	return button
+end
+
+local function CreateNodeButton(frame, board, nodeID)
+	local button = CreatePlanButton(frame, board, nodeID)
+	AttachPlanMethods(button, frame, nodeID)
+	button:SetScript("OnClick", function(_, mouseButton)
+		NodeClick(frame, nodeID, mouseButton)
+	end)
+	button:SetScript("OnEnter", ShowNodeTooltip)
 	-- Same corner as the talent button's SearchIcon: centered on the icon's top right.
 	local searchIcon = button:CreateTexture(nil, "OVERLAY")
-	searchIcon:SetPoint("CENTER", icon, "TOPRIGHT", 0, 0)
+	searchIcon:SetPoint("CENTER", button.icon, "TOPRIGHT", 0, 0)
 	searchIcon:SetSize(63, 63)
 	if searchIcon.SetAtlas then
 		searchIcon:SetAtlas(SearchMatchAtlas(), true)
@@ -1937,9 +1940,7 @@ local function CreateNodeButton(frame, board, nodeID)
 	text:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
 	text:SetJustifyH("RIGHT")
 	button.rankText = text
-	local live = LiveButton(frame, nodeID)
-	MatchIcon(icon, shade, live)
-	MatchSpendText(text, live)
+	MatchSpendText(text, LiveButton(frame, nodeID))
 	button.choices = {}
 	return button
 end
@@ -1957,46 +1958,18 @@ local function EnsureChoices(frame, board, button, structure)
 	for index, entryID in ipairs(entries) do
 		local choice = button.choices[index]
 		if not choice then
-			choice = CreateFrame("Button", nil, board)
-			local size = ButtonSize(frame)
-			if size then
-				choice:SetSize(size, size)
-			end
-			choice:RegisterForClicks("LeftButtonDown", "RightButtonDown")
-			local shadow = choice:CreateTexture(nil, "BACKGROUND")
-			shadow:SetPoint("CENTER")
-			shadow:Hide()
-			choice.Shadow = shadow
-			local icon = choice:CreateTexture(nil, "ARTWORK")
-			icon:SetAllPoints(choice)
-			choice.icon = icon
-			local shade = choice:CreateTexture(nil, "ARTWORK", nil, 1)
-			shade:SetAllPoints(icon)
-			if shade.SetColorTexture then
-				shade:SetColorTexture(0, 0, 0, 1)
-			end
-			shade:Hide()
-			choice.shade = shade
-			MatchIcon(icon, shade, LiveButton(frame, nodeID))
-			local border = choice:CreateTexture(nil, "OVERLAY")
-			border:SetAllPoints(choice)
-			choice.border = border
+			choice = CreatePlanButton(frame, board, nodeID)
+			choice.planNode = button
+			choice:SetScript("OnClick", function(self, mouseButton)
+				NodeClick(frame, nodeID, mouseButton, self.entryID)
+			end)
+			choice:SetScript("OnEnter", ShowNodeTooltip)
 			button.choices[index] = choice
 		end
 		choice.entryID = entryID
 		choice.entryVisual = EntryVisual(frame, entryID)
 		ApplyIcon(choice.icon, choice.entryVisual)
 		ApplyBorder(choice.border, BorderAtlas(frame, nodeID, entryID))
-		choice:SetScript("OnClick", function(_, mouseButton)
-			NodeClick(frame, nodeID, mouseButton, entryID)
-		end)
-		choice.planNode = button
-		choice:SetScript("OnEnter", function(self)
-			ShowNodeTooltip(self)
-		end)
-		if GameTooltip_Hide then
-			choice:SetScript("OnLeave", GameTooltip_Hide)
-		end
 		choice:Show()
 	end
 	for index = #entries + 1, #button.choices do
@@ -2327,7 +2300,6 @@ local function PaintNode(frame, nodeID)
 	local look = NodeLook(nodeID)
 	ApplyBorder(button.border, BorderAtlas(frame, nodeID))
 	ApplyShade(button.icon, button.shade, look)
-	button.visualUpdates = (button.visualUpdates or 0) + 1
 	for _, choice in ipairs(button.choices or {}) do
 		local choiceLook = NodeLook(nodeID, choice.entryID)
 		ApplyBorder(choice.border, BorderAtlas(frame, nodeID, choice.entryID))
@@ -2345,22 +2317,6 @@ local function RefreshOpenTooltip()
 		local script = owner:GetScript("OnEnter")
 		if script then
 			script(owner)
-		end
-	end
-end
-
-local function MarkOutgoing(affected, nodeID)
-	if not nodeID then
-		return
-	end
-	affected[nodeID] = true
-	local structure = ns.structure[nodeID]
-	if not structure or not structure.edges then
-		return
-	end
-	for _, edge in ipairs(structure.edges) do
-		if edge.target then
-			affected[edge.target] = true
 		end
 	end
 end
@@ -2396,19 +2352,7 @@ local function ApplyLocalChange(frame, originID, poolChanged)
 			end
 		end
 	end
-	for _ = 1, 12 do
-		local removed = false
-		for nodeID in pairs(ns.ranks) do
-			if not RankHolds(nodeID) then
-				ns.ranks[nodeID] = nil
-				MarkOutgoing(affected, nodeID)
-				removed = true
-			end
-		end
-		if not removed then
-			break
-		end
-	end
+	Prune(affected)
 	for nodeID in pairs(affected) do
 		PaintNode(frame, nodeID)
 	end
@@ -2506,11 +2450,7 @@ local function ShowPlan(frame)
 	if not next(ns.structure) then
 		RememberFrame(frame)
 	end
-	for _ = 1, 12 do
-		if not Prune() then
-			break
-		end
-	end
+	Prune()
 	HideClientTree(frame)
 	BuildBoard(frame)
 	HideLockedOverlay(frame)
@@ -2614,19 +2554,19 @@ local function ClientText(globalName, fallback)
 	return fallback
 end
 
-local function SpecChoiceText(group)
+local function SlotText(group)
 	if group == 2 then
 		return "Secondary"
 	end
 	return "Primary"
 end
 
-local function UpdateSpecButtons(frame)
-	local dropdown = frame and frame.calculatorSpecDropdown
+local function UpdateSlotDropdown(frame)
+	local dropdown = frame and frame.calculatorSlotDropdown
 	if not dropdown then
 		return
 	end
-	local text = SpecChoiceText(ns.specGroup or 1)
+	local text = SlotText(ns.slot or 1)
 	dropdown.calculatorLabel = text
 	if dropdown.GenerateMenu and dropdown.menuGenerator then
 		pcall(dropdown.GenerateMenu, dropdown)
@@ -2636,21 +2576,21 @@ local function UpdateSpecButtons(frame)
 	end
 end
 
-local function SelectSpecGroup(frame, group)
+local function SelectSlot(frame, group)
 	if group ~= 1 and group ~= 2 then
 		return
 	end
-	if ns.specGroup == group and ns.loadedGroup == group then
-		UpdateSpecButtons(frame)
+	if ns.slot == group and ns.loadedSlot == group then
+		UpdateSlotDropdown(frame)
 		return
 	end
-	ns.specGroup = group
+	ns.slot = group
 	EnsureWorkingCopy()
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
 		HideRealActions(frame)
 	else
-		UpdateSpecButtons(frame)
+		UpdateSlotDropdown(frame)
 	end
 end
 
@@ -2673,15 +2613,15 @@ function HideRealActions(frame)
 		UpdateSaveButton(frame)
 		frame.calculatorClearButton:Show()
 	end
-	if frame.calculatorSpecDropdown then
+	if frame.calculatorSlotDropdown then
 		if frame:IsShown() then
-			if frame.calculatorSpecDropdown.PlaceOnTalentFrame then
-				frame.calculatorSpecDropdown:PlaceOnTalentFrame()
+			if frame.calculatorSlotDropdown.PlaceOnTalentFrame then
+				frame.calculatorSlotDropdown:PlaceOnTalentFrame()
 			end
-			frame.calculatorSpecDropdown:Show()
-			UpdateSpecButtons(frame)
+			frame.calculatorSlotDropdown:Show()
+			UpdateSlotDropdown(frame)
 		else
-			frame.calculatorSpecDropdown:Hide()
+			frame.calculatorSlotDropdown:Hide()
 		end
 	end
 end
@@ -2698,11 +2638,11 @@ local function ShowRealActions(frame)
 		end
 		frame.calculatorClearButton:Hide()
 	end
-	if frame.calculatorSpecDropdown then
-		if frame.calculatorSpecDropdown.CloseMenu then
-			frame.calculatorSpecDropdown:CloseMenu()
+	if frame.calculatorSlotDropdown then
+		if frame.calculatorSlotDropdown.CloseMenu then
+			frame.calculatorSlotDropdown:CloseMenu()
 		end
-		frame.calculatorSpecDropdown:Hide()
+		frame.calculatorSlotDropdown:Hide()
 	end
 	ShowCharacterTalentNumbers(frame)
 	frame.ApplyButton:Show()
@@ -2728,8 +2668,8 @@ local function SnapshotRanks()
 end
 
 function RememberCurrentPlan()
-	if ns.loadedGroup then
-		ns.planByGroup[ns.loadedGroup] = SnapshotRanks()
+	if ns.loadedSlot then
+		ns.planBySlot[ns.loadedSlot] = SnapshotRanks()
 	end
 end
 
@@ -2752,26 +2692,26 @@ function EnsureWorkingCopy()
 	local key = CharacterKey()
 	if key and ns.characterKey ~= key then
 		ns.characterKey = key
-		ns.loadedGroup = nil
-		ns.specGroup = nil
-		ns.planByGroup = {}
+		ns.loadedSlot = nil
+		ns.slot = nil
+		ns.planBySlot = {}
 		ClearRankTable()
 		ns.structure = {}
 		ns.incoming = {}
 	end
-	local group = ns.specGroup or 1
-	ns.specGroup = group
-	if ns.loadedGroup == group then
+	local group = ns.slot or 1
+	ns.slot = group
+	if ns.loadedSlot == group then
 		return
 	end
 	RememberCurrentPlan()
-	local kept = ns.planByGroup[group]
+	local kept = ns.planBySlot[group]
 	if kept then
 		ApplySnapshot(kept)
 	else
 		LoadSavedRanks(group)
 	end
-	ns.loadedGroup = group
+	ns.loadedSlot = group
 end
 
 local function EnterCalculator(frame)
@@ -2814,12 +2754,8 @@ local function RestoreSharedTree(frame)
 	restoringTree = false
 end
 
-local function LeaveCalculator(frame)
-	RestoreSharedTree(frame)
-end
-
 local function SaveBuild()
-	local build = SaveSlot(ns.specGroup or 1, true)
+	local build = SaveSlot(ns.slot or 1, true)
 	if not build then
 		return
 	end
@@ -2847,7 +2783,7 @@ end
 
 local function ClearBuild(frame)
 	ClearRankTable()
-	ns.loadedGroup = ns.specGroup or 1
+	ns.loadedSlot = ns.slot or 1
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
 		HideRealActions(frame)
@@ -2857,12 +2793,12 @@ local function ClearBuild(frame)
 end
 
 local function LoadSavedPlan(frame)
-	local group = ns.specGroup or 1
+	local group = ns.slot or 1
 	if not HasSavedBuild() then
 		return
 	end
 	LoadSavedRanks(group)
-	ns.loadedGroup = group
+	ns.loadedSlot = group
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
 		HideRealActions(frame)
@@ -2949,24 +2885,21 @@ local function CreateButtons(frame)
 	end
 	PlaceDropdown()
 	dropdown.PlaceOnTalentFrame = PlaceDropdown
-	function dropdown:Pick(group)
-		SelectSpecGroup(frame, group)
-	end
 	if not dropdown.SetupMenu then
 		function dropdown:GetText()
-			return self.calculatorLabel or SpecChoiceText(ns.specGroup or 1)
+			return self.calculatorLabel or SlotText(ns.slot or 1)
 		end
 	end
 	if dropdown.SetupMenu then
 		dropdown:SetupMenu(function(_, rootDescription)
 			local function isSelected(group)
-				return (ns.specGroup or 1) == group
+				return (ns.slot or 1) == group
 			end
 			local function setSelected(group)
-				SelectSpecGroup(frame, group)
+				SelectSlot(frame, group)
 			end
-			rootDescription:CreateRadio(SpecChoiceText(1), isSelected, setSelected, 1)
-			rootDescription:CreateRadio(SpecChoiceText(2), isSelected, setSelected, 2)
+			rootDescription:CreateRadio(SlotText(1), isSelected, setSelected, 1)
+			rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
 		end)
 	end
 	dropdown:Hide()
@@ -2977,8 +2910,8 @@ local function CreateButtons(frame)
 		end
 		dropdown:Hide()
 	end
-	if not frame.calculatorSpecHooked then
-		frame.calculatorSpecHooked = true
+	if not frame.calculatorSlotHooked then
+		frame.calculatorSlotHooked = true
 		frame:HookScript("OnHide", HideDropdown)
 		local owner = PlayerSpellsFrame
 		if owner and owner ~= frame then
@@ -2986,8 +2919,8 @@ local function CreateButtons(frame)
 		end
 	end
 
-	frame.calculatorSpecDropdown = dropdown
-	UpdateSpecButtons(frame)
+	frame.calculatorSlotDropdown = dropdown
+	UpdateSlotDropdown(frame)
 end
 
 local function BlockOriginal(frame, methodName)
@@ -3025,7 +2958,7 @@ local function Install(frame)
 			if tabs and tabs.SetTabEnabled then
 				tabs:SetTabEnabled(self.calculatorTabID, true)
 			end
-			UpdateSpecButtons(self)
+			UpdateSlotDropdown(self)
 		end
 	end
 	CreateButtons(frame)
