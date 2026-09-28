@@ -1,8 +1,10 @@
-# TalentCalculator
+# Simple Talents Forever
 
 Rules for this addon. The shared rules are in `../AGENTS.md`.
 
-A mock talent planner in its own "Talent Calculator" tab on the talent window: separate mock trees the player fills as if they had max points. Agreed with the user.
+A mock talent planner in its own "Simple Talents" tab on the talent window: separate mock trees the player fills as if they had max points. Agreed with the user.
+
+The name is "Simple Talents Forever" (folder, repo and packages `SimpleTalentsForever`; `ADDON_TITLE` in the code). It is for players who want simplicity and a look that belongs in the game (Classic fans). Until 0.4.1 it was called TalentCalculator.
 
 ## Never
 
@@ -11,7 +13,8 @@ A mock talent planner in its own "Talent Calculator" tab on the talent window: s
 ## Look and logic
 
 - The look and the working logic are 1:1 with the game's talent window. The look and UX are set; change them only when the user asks.
-- The version shows as `v<VERSION>` on the left end of the unspent points row, only on the calculator tab.
+- The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Simple Talents Forever" in the game's gold title font in the center of that row, both only on the calculator tab.
+- Chat lines start with "Simple Talents Forever:" in gold.
 
 ## Points
 
@@ -29,6 +32,7 @@ A mock talent planner in its own "Talent Calculator" tab on the talent window: s
 
 - Per character (name-realm), two independent plans: Primary (`build`) and Secondary (`secondary`). They are the calculator's own slots, not the character's spec slots, and not tied to a spec id.
 - Primary is shown first. Unsaved edits are kept per slot for the session.
-- `NormalizeSaved` rebuilds `TalentCalculatorDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
+- `NormalizeSaved` rebuilds `SimpleTalentsForeverDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
 - A plan shown on the tree is fitted to it (`FitPlanToTree`): ranks capped at the talent's max, a choice the node no longer has becomes its first one, and points over the budget come off the deepest rows.
 - Own class only.
+- The old saved variable `TalentCalculatorDB` stays listed in the `.toc` so a save file the player renamed from `TalentCalculator.lua` to `SimpleTalentsForever.lua` still loads. `NormalizeSaved` reads it once, keeps the newer plans for a character in both, and clears it. Remove it from the `.toc` and the code only when the user says the move is done.

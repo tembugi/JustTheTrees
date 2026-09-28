@@ -2,7 +2,10 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.3.0"
+local VERSION = "0.4.1"
+-- The addon's name as the player sees it: the title on the points row and in chat.
+local ADDON_TITLE = "Simple Talents Forever"
+local TAB_TEXT = "Simple Talents"
 
 -- The plan is a level 60 character: one point per level from 10 through 60.
 local MAX_LEVEL = 60
@@ -76,31 +79,40 @@ local function CleanPlan(plan)
 	return { nodes = nodes }
 end
 
--- Runs on every load. Rebuilds TalentCalculatorDB from the fields the addon uses:
+-- Runs on every load. Rebuilds SimpleTalentsForeverDB from the fields the addon uses:
 -- the save format, and per character the Primary (build) and Secondary plans.
 -- Anything else, left by older versions or damaged, is dropped.
 -- A new saved field has to be added here too, or it is dropped on the next load.
+--
+-- Before 0.4.1 the addon was TalentCalculator and saved TalentCalculatorDB, in the
+-- same layout. The .toc still lists that name, so a save file renamed by the player
+-- loads it here. Its characters are read once, a character in both keeps the new
+-- plans, and the old name is cleared so it is not written again.
 local function NormalizeSaved()
-	local old = TalentCalculatorDB
 	local clean = {
 		format = SAVE_FORMAT,
 		characters = {},
 	}
-	if type(old) == "table" and type(old.characters) == "table" then
-		for key, record in pairs(old.characters) do
-			if type(key) == "string" and key ~= "" and type(record) == "table" then
-				local build = CleanPlan(record.build)
-				local secondary = CleanPlan(record.secondary)
-				if build or secondary then
-					clean.characters[key] = {
-						build = build,
-						secondary = secondary,
-					}
+	local sources = { TalentCalculatorDB, SimpleTalentsForeverDB }
+	for index = 1, 2 do
+		local old = sources[index]
+		if type(old) == "table" and type(old.characters) == "table" then
+			for key, record in pairs(old.characters) do
+				if type(key) == "string" and key ~= "" and type(record) == "table" then
+					local build = CleanPlan(record.build)
+					local secondary = CleanPlan(record.secondary)
+					if build or secondary then
+						clean.characters[key] = {
+							build = build,
+							secondary = secondary,
+						}
+					end
 				end
 			end
 		end
 	end
-	TalentCalculatorDB = clean
+	SimpleTalentsForeverDB = clean
+	TalentCalculatorDB = nil
 end
 
 local function CharacterKey()
@@ -125,7 +137,7 @@ end
 -- Every chat line starts with the addon's name in gold. The addon writes to chat only
 -- after a button press or when something changed that the player did not ask for.
 local function Say(message)
-	print(NORMAL_FONT_COLOR:WrapTextInColorCode("Talent Calculator") .. ": " .. message)
+	print(NORMAL_FONT_COLOR:WrapTextInColorCode(ADDON_TITLE) .. ": " .. message)
 end
 
 local function ActiveSpecGroup()
@@ -143,13 +155,13 @@ local function SaveSlot(group, create)
 	if not key then
 		return nil
 	end
-	local record = TalentCalculatorDB.characters[key]
+	local record = SimpleTalentsForeverDB.characters[key]
 	if type(record) ~= "table" then
 		if not create then
 			return nil
 		end
 		record = {}
-		TalentCalculatorDB.characters[key] = record
+		SimpleTalentsForeverDB.characters[key] = record
 	end
 	local field = group == 2 and "secondary" or "build"
 	if create and type(record[field]) ~= "table" then
@@ -1103,6 +1115,21 @@ local function VersionLabel(frame)
 	return display.calculatorVersionText
 end
 
+-- The addon's name in the game's gold title font, centered on the same points row.
+local function TitleLabel(frame)
+	local display = frame.ClassCurrencyDisplay
+	if not display.calculatorTitleText then
+		local text = display:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+		text:SetJustifyH("CENTER")
+		text:SetText(ADDON_TITLE)
+		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
+		text:SetPoint("CENTER", frame.BackgroundBorder, "TOP", 0, -6 - rowHeight / 2)
+		text:Hide()
+		display.calculatorTitleText = text
+	end
+	return display.calculatorTitleText
+end
+
 local function PlanMatchesSaved()
 	local savedRanks = SavedRanks(ns.slot or 1) or {}
 	for nodeID, stored in pairs(ns.ranks) do
@@ -1231,6 +1258,7 @@ local function PaintSpent(frame)
 		levelText:Show()
 	end
 	VersionLabel(frame):Show()
+	TitleLabel(frame):Show()
 	UpdateSaveButton(frame)
 	if not frame.treeHeaders then
 		return
@@ -1909,10 +1937,31 @@ local function MatchSpendText(text, live)
 	end
 end
 
--- NameMatch atlas from TalentButtonUtil.GetStyleForSearchMatchType, same mark the talent button shows.
-local function SearchMatchAtlas()
-	local style = TalentButtonUtil.GetStyleForSearchMatchType(SpellSearchUtil.MatchType.NameMatch)
-	return style and style.icon or "talents-search-match"
+-- The talent window's own search result for a talent: exact name, name, description
+-- or related match, the same answer its buttons get. For a choice node it is the best
+-- match across its entries. Action bar matches ("not on your action bar") are about
+-- the character's own bars, so a planned talent does not show them.
+local function PlanSearchMatchType(frame, nodeID)
+	local matchType = frame:GetSearchMatchTypeForEntry(nodeID, nil)
+	if SpellSearchUtil.IsActionBarMatchType(matchType) then
+		return nil
+	end
+	return matchType
+end
+
+-- Each plan button shows the mark TalentButtonSearchIconMixin:SetMatchType picks for
+-- the same result, from TalentButtonUtil.GetStyleForSearchMatchType.
+local function ApplyPlanSearch(frame)
+	for nodeID, button in pairs(frame.calculatorNodes or {}) do
+		local matchType = PlanSearchMatchType(frame, nodeID)
+		local style = matchType and TalentButtonUtil.GetStyleForSearchMatchType(matchType)
+		if style then
+			button.SearchIcon:SetAtlas(style.icon, true)
+			button.SearchIcon:Show()
+		else
+			button.SearchIcon:Hide()
+		end
+	end
 end
 
 -- The layers every plan button draws, sized like the talent button it stands for.
@@ -1956,7 +2005,6 @@ local function CreateNodeButton(frame, board, nodeID)
 	local searchIcon = button:CreateTexture(nil, "OVERLAY")
 	searchIcon:SetPoint("CENTER", button.icon, "TOPRIGHT", 0, 0)
 	searchIcon:SetSize(63, 63)
-	searchIcon:SetAtlas(SearchMatchAtlas(), true)
 	searchIcon:Hide()
 	button.SearchIcon = searchIcon
 	local text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -2455,6 +2503,7 @@ local function ShowPlan(frame)
 	end
 	HideClientTree(frame)
 	BuildBoard(frame)
+	ApplyPlanSearch(frame)
 	HideLockedOverlay(frame)
 	for nodeID in pairs(ns.structure) do
 		PaintNode(frame, nodeID)
@@ -2608,6 +2657,9 @@ local function ShowRealActions(frame)
 	end
 	if display and display.calculatorVersionText then
 		display.calculatorVersionText:Hide()
+	end
+	if display and display.calculatorTitleText then
+		display.calculatorTitleText:Hide()
 	end
 	if frame.calculatorSaveButton then
 		frame.calculatorSaveButton:Hide()
@@ -2923,7 +2975,7 @@ local function Install(frame)
 		return
 	end
 
-	frame.calculatorTabID = frame:AddNamedTab("Talent Calculator")
+	frame.calculatorTabID = frame:AddNamedTab(TAB_TEXT)
 	local calculatorTab = frame.TabSystem:GetTabButton(frame.calculatorTabID)
 	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab
 	-- is not a spec, so its label is written again, without the lock or checkmark,
@@ -3009,67 +3061,7 @@ local function Install(frame)
 	hooksecurefunc(frame, "HandlePlayerTalentUpdate", KeepRealActionsHidden)
 	hooksecurefunc(frame, "UpdateInspecting", KeepRealActionsHidden)
 
-	-- A nil or short search is inactive even while the box still holds the old query.
-	local committedQuery = nil
-
-	local function NameMatches(name, query)
-		return type(name) == "string" and name ~= "" and string.find(string.lower(name), query, 1, true) ~= nil
-	end
-
-	-- A talent's name does not change during a session. It is kept once the spell data has it.
-	local entryNames = {}
-	local function EntryName(self, entryID)
-		local name = entryNames[entryID]
-		if not name then
-			name = EntryVisual(self, entryID).name
-			entryNames[entryID] = name
-		end
-		return name
-	end
-
-	local function ApplyPlanSearch(self)
-		local query = committedQuery and string.lower(committedQuery) or ""
-		for _, button in pairs(self.calculatorNodes or {}) do
-			local matched = false
-			if query ~= "" then
-				local shown = button.entryVisual and button.entryVisual.name
-				matched = NameMatches(shown, query)
-				local nodeID = button.calculatorNodeID
-				local structure = nodeID and ns.structure[nodeID]
-				-- A choice node matches any of its entries, including one that is not selected.
-				if not matched and structure and structure.entryIDs then
-					for _, entryID in ipairs(structure.entryIDs) do
-						if NameMatches(EntryName(self, entryID), query) then
-							matched = true
-							break
-						end
-					end
-				end
-			end
-			local searchIcon = button.SearchIcon
-			if searchIcon then
-				if matched then
-					searchIcon:SetAtlas(SearchMatchAtlas(), true)
-					searchIcon:Show()
-				else
-					searchIcon:Hide()
-				end
-			end
-		end
-	end
-
-	-- SetFullResultSearch displays its results before it returns, while the query
-	-- here is still the old one. The plan's marks are redrawn with the new query.
-	hooksecurefunc(frame, "SetFullResultSearch", function(self, searchText)
-		if type(searchText) == "string" and strlen(searchText) >= MIN_CHARACTER_SEARCH then
-			committedQuery = searchText
-		else
-			committedQuery = nil
-		end
-		if ShowingCalculator(self) then
-			ApplyPlanSearch(self)
-		end
-	end)
+	-- The window's search results are up to date whenever it displays them.
 	hooksecurefunc(frame, "DisplayFullSearchResults", function(self)
 		if ShowingCalculator(self) then
 			ApplyPlanSearch(self)
