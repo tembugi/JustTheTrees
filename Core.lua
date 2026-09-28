@@ -921,7 +921,7 @@ local function VersionLabel(frame)
 	if not display.calculatorVersionText then
 		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
 		text:SetJustifyH("LEFT")
-		text:SetText("v." .. C_AddOns.GetAddOnMetadata(addonName, "Version"))
+		text:SetText("v" .. C_AddOns.GetAddOnMetadata(addonName, "Version"))
 		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
 		text:SetPoint("LEFT", frame.BackgroundBorder, "TOPLEFT", 20, -6 - rowHeight / 2)
 		text:Hide()
