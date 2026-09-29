@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.5.1"
+local VERSION = "0.5.2"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -2638,7 +2638,9 @@ function HideRealActions(frame)
 		frame.calculatorClearButton:Show()
 	end
 	if frame.calculatorSlotDropdown then
-		if frame:IsShown() then
+		-- The dropdown sits on UIParent, and the game runs this on talent events while the
+		-- window is closed (this frame stays shown inside it), so only a visible window shows it.
+		if frame:IsVisible() then
 			frame.calculatorSlotDropdown:PlaceOnTalentFrame()
 			frame.calculatorSlotDropdown:Show()
 			UpdateSlotDropdown(frame)
