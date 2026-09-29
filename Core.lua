@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.5.2"
+local VERSION = "0.5.3"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -2638,15 +2638,8 @@ function HideRealActions(frame)
 		frame.calculatorClearButton:Show()
 	end
 	if frame.calculatorSlotDropdown then
-		-- The dropdown sits on UIParent, and the game runs this on talent events while the
-		-- window is closed (this frame stays shown inside it), so only a visible window shows it.
-		if frame:IsVisible() then
-			frame.calculatorSlotDropdown:PlaceOnTalentFrame()
-			frame.calculatorSlotDropdown:Show()
-			UpdateSlotDropdown(frame)
-		else
-			frame.calculatorSlotDropdown:Hide()
-		end
+		frame.calculatorSlotDropdown:Show()
+		UpdateSlotDropdown(frame)
 	end
 end
 
@@ -2895,19 +2888,13 @@ local function CreateButtons(frame)
 	frame.calculatorLoadButton = load
 	frame.calculatorClearButton = clear
 
-	-- UIParent + DIALOG so the talent tree cannot take the click. This is the game's dropdown.
-	local dropdown = CreateFrame("DropdownButton", nil, UIParent, "WowStyle1DropdownTemplate")
-	dropdown:SetFrameStrata("DIALOG")
-	dropdown:SetFrameLevel(100)
+	-- The game's dropdown, part of the talent window, so it hides and moves with it and its
+	-- menu closes with it. The talent buttons sit at level 1000 and up; 2000 keeps the dropdown
+	-- above them, where the window's own search list sits.
+	local dropdown = CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
+	dropdown:SetFrameLevel(2000)
 	dropdown:SetWidth(160)
-	local function PlaceDropdown()
-		dropdown:ClearAllPoints()
-		-- ApplyButton is hidden while the calculator is open. Anchoring to it leaves this control on screen after the window moves or closes.
-		local anchor = frame.Background or frame
-		dropdown:SetPoint("BOTTOM", anchor, "BOTTOM", 0, 36)
-	end
-	PlaceDropdown()
-	dropdown.PlaceOnTalentFrame = PlaceDropdown
+	dropdown:SetPoint("BOTTOM", frame.Background or frame, "BOTTOM", 0, 36)
 	dropdown:SetupMenu(function(_, rootDescription)
 		local function isSelected(group)
 			return (ns.slot or 1) == group
@@ -2919,19 +2906,6 @@ local function CreateButtons(frame)
 		rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
 	end)
 	dropdown:Hide()
-
-	local function HideDropdown()
-		dropdown:CloseMenu()
-		dropdown:Hide()
-	end
-	if not frame.calculatorSlotHooked then
-		frame.calculatorSlotHooked = true
-		frame:HookScript("OnHide", HideDropdown)
-		local owner = PlayerSpellsFrame
-		if owner and owner ~= frame then
-			owner:HookScript("OnHide", HideDropdown)
-		end
-	end
 
 	frame.calculatorSlotDropdown = dropdown
 	UpdateSlotDropdown(frame)
