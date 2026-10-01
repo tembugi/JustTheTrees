@@ -13,8 +13,14 @@ The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_T
 ## Look and logic
 
 - The look and the working logic are 1:1 with the game's talent window. The look and UX are set; change them only when the user asks.
+- Where the game has code or a template for a part, the plan uses it: talent states are drawn by `TalentButtonArtMixin:ApplyVisualState` (Forever's border rule: green until maxed, yellow when maxed), gates are `TalentFrameGateTemplate`, search marks `TalentButtonSearchIconTemplate`, and the pulse on talents that can take a point copies `SelectableGlow`.
+- Tooltips are built like the game's talent tooltips: the talent tooltip backdrop, rank, the rank's text, next rank, "Click to learn" or "Right click to unlearn", then the row requirement and "Requires all preceding talents".
+- Gates: the game's gate on the first locked row of each tree, with the points the plan still needs; hovering it shows the game's gate sentence.
+- Clicks as on the game's buttons: left adds a point, right removes one, shift-click puts the talent's link in chat.
+- Inspecting another player while the tab is open hands the window to their talents. The tab is off while inspecting.
 - The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Just the Trees" in the game's gold title font in the center of that row, both only on the calculator tab.
-- Chat lines start with "Just the Trees:" in gold.
+- Chat lines start with "Just the Trees:" in gold. Failures are red after it, and talents are named by their links.
+- The addon's own labels and messages are English. Parts copied from the game use the game's own strings.
 - Search marks come from the talent window's own search and use the game's search mark (`TalentButtonSearchIconTemplate`: the icon for each match type, its pulse and its hover text), on talent buttons and on each choice. "Not on your action bar" marks are left out: planned talents are not on the character's bars.
 
 ## Points

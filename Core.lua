@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "0.5.3"
+local VERSION = "1.0.0"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -10,33 +10,20 @@ local ADDON_TITLE = "Just the Trees"
 local MAX_LEVEL = 60
 local FIRST_TALENT_LEVEL = 10
 local PLAN_BUDGET = MAX_LEVEL - FIRST_TALENT_LEVEL + 1
+-- Row 1 of a tree is open. Every row after it needs this many more points spent in the
+-- rows above it, in that same tree. A fixed rule, not read from the client.
+local POINTS_PER_ROW = 5
 -- Talents whose posY differs by no more than this sit on the same row.
 local ROW_TOLERANCE = 0.5
 
 local TALENT_UI = "Blizzard_PlayerSpells"
-local REQUIRED_EDGE
-local SUFFICIENT_EDGE
-local EXCLUSIVE_EDGE
+local REQUIRED_EDGE = Enum.TraitEdgeType.RequiredForAvailability
+local SUFFICIENT_EDGE = Enum.TraitEdgeType.SufficientForAvailability
+local EXCLUSIVE_EDGE = Enum.TraitEdgeType.MutuallyExclusive
 
-local function ReadEnums()
-	REQUIRED_EDGE = Enum.TraitEdgeType.RequiredForAvailability
-	SUFFICIENT_EDGE = Enum.TraitEdgeType.SufficientForAvailability
-	EXCLUSIVE_EDGE = Enum.TraitEdgeType.MutuallyExclusive
-end
-
-ns.ranks = {}
-ns.structure = {}
-ns.incoming = {}
-ns.loadedSlot = nil
-ns.slot = nil
-ns.planBySlot = {}
-ns.budget = PLAN_BUDGET
-
--- Primary and Secondary use this same frame. Calculator behavior runs only
--- while its own tab is the one selected.
-local function ShowingCalculator(frame)
-	return frame and frame.calculatorMode and frame.calculatorTabID and frame:GetTab() == frame.calculatorTabID
-end
+--------------------------------------------------------------------------------
+-- Saved plans
+--------------------------------------------------------------------------------
 
 -- The saved layout's version. Raise it only when a change stores plans differently,
 -- and convert the older layout in NormalizeSaved. Saves without a format already
@@ -117,30 +104,16 @@ local function CharacterKey()
 	return name .. "-" .. realm
 end
 
-local function SlotText(group)
-	if group == 2 then
+local function SlotText(slot)
+	if slot == 2 then
 		return "Secondary"
 	end
 	return "Primary"
 end
 
--- Every chat line starts with the addon's name in gold. The addon writes to chat only
--- after a button press or when something changed that the player did not ask for.
-local function Say(message)
-	print(NORMAL_FONT_COLOR:WrapTextInColorCode(ADDON_TITLE) .. ": " .. message)
-end
-
-local function ActiveSpecGroup()
-	local group = C_SpecializationInfo.GetActiveSpecGroup()
-	if group == 1 or group == 2 then
-		return group
-	end
-	return 1
-end
-
 -- Each character has two saved plans, Primary (1) and Secondary (2). They are
 -- the calculator's own slots, not the character's spec slots.
-local function SaveSlot(group, create)
+local function SaveSlot(slot, create)
 	local key = CharacterKey()
 	if not key then
 		return nil
@@ -153,7 +126,7 @@ local function SaveSlot(group, create)
 		record = {}
 		JustTheTreesDB.characters[key] = record
 	end
-	local field = group == 2 and "secondary" or "build"
+	local field = slot == 2 and "secondary" or "build"
 	if create and type(record[field]) ~= "table" then
 		record[field] = {}
 	end
@@ -164,8 +137,8 @@ local function SaveSlot(group, create)
 end
 
 -- The saved plan's ranks by node, or nil when that slot has never been saved.
-local function SavedRanks(group)
-	local saved = SaveSlot(group, false)
+local function SavedRanks(slot)
+	local saved = SaveSlot(slot, false)
 	if not saved or type(saved.nodes) ~= "table" then
 		return nil
 	end
@@ -182,20 +155,137 @@ local function SavedRanks(group)
 	return ranks
 end
 
+--------------------------------------------------------------------------------
+-- Chat
+--------------------------------------------------------------------------------
+
+-- Every chat line starts with the addon's name in gold. The addon writes to chat only
+-- after a button press or when something changed that the player did not ask for.
+local function Say(message)
+	print(NORMAL_FONT_COLOR:WrapTextInColorCode(ADDON_TITLE) .. ": " .. message)
+end
+
+-- Something the player asked for did not happen. The line is red after the name.
+local function SayFailed(message)
+	Say(RED_FONT_COLOR:WrapTextInColorCode(message))
+end
+
+--------------------------------------------------------------------------------
+-- The plan
+--------------------------------------------------------------------------------
+
+-- The plan on screen: ranks (1 or more) and chosen entry (0 for none) by node, for the
+-- slot in ns.loadedSlot. ns.slot is the slot picked in the menu, and ns.planBySlot
+-- keeps each slot's unsaved edits for the session.
+ns.ranks = {}
+ns.slot = nil
+ns.loadedSlot = nil
+ns.planBySlot = {}
+-- The tree's fixed layout by node (RememberFrame), and the arrows into each node.
+ns.structure = {}
+ns.incoming = {}
+
+local function TotalSpent()
+	local spent = 0
+	for _, stored in pairs(ns.ranks) do
+		spent = spent + stored.ranks
+	end
+	return spent
+end
+
+local function Unspent()
+	return PLAN_BUDGET - TotalSpent()
+end
+
 local function ClearRankTable()
 	for nodeID in pairs(ns.ranks) do
 		ns.ranks[nodeID] = nil
 	end
 end
 
-local function LoadSavedRanks(group)
+local function LoadSavedRanks(slot)
 	ClearRankTable()
-	for nodeID, stored in pairs(SavedRanks(group) or {}) do
+	for nodeID, stored in pairs(SavedRanks(slot) or {}) do
 		ns.ranks[nodeID] = stored
 	end
 end
 
-local enteringCalculator = false
+local function SnapshotRanks()
+	local copy = {}
+	for nodeID, stored in pairs(ns.ranks) do
+		copy[nodeID] = {
+			ranks = stored.ranks,
+			entryID = stored.entryID,
+		}
+	end
+	return copy
+end
+
+local function ApplySnapshot(copy)
+	ClearRankTable()
+	for nodeID, stored in pairs(copy) do
+		ns.ranks[nodeID] = {
+			ranks = stored.ranks,
+			entryID = stored.entryID,
+		}
+	end
+end
+
+local function RememberCurrentPlan()
+	if ns.loadedSlot then
+		ns.planBySlot[ns.loadedSlot] = SnapshotRanks()
+	end
+end
+
+-- Puts the selected slot's plan on the calculator: the unsaved edits from this
+-- session if that slot has any, otherwise its saved plan. Primary is the first slot
+-- shown. The character's name can be missing right after login; once it is known,
+-- the plans start over for it.
+local function EnsureWorkingCopy()
+	local key = CharacterKey()
+	if key and ns.characterKey ~= key then
+		ns.characterKey = key
+		ns.loadedSlot = nil
+		ns.slot = nil
+		ns.planBySlot = {}
+		ClearRankTable()
+		ns.structure = {}
+		ns.incoming = {}
+	end
+	local slot = ns.slot or 1
+	ns.slot = slot
+	if ns.loadedSlot == slot then
+		return
+	end
+	RememberCurrentPlan()
+	local kept = ns.planBySlot[slot]
+	if kept then
+		ApplySnapshot(kept)
+	else
+		LoadSavedRanks(slot)
+	end
+	ns.loadedSlot = slot
+end
+
+local function PlanMatchesSaved()
+	local savedRanks = SavedRanks(ns.slot or 1) or {}
+	for nodeID, stored in pairs(ns.ranks) do
+		local saved = savedRanks[nodeID]
+		if not saved or saved.ranks ~= stored.ranks or saved.entryID ~= stored.entryID then
+			return false
+		end
+		savedRanks[nodeID] = nil
+	end
+	return next(savedRanks) == nil
+end
+
+local function HasSavedPlan()
+	return SavedRanks(ns.slot or 1) ~= nil
+end
+
+--------------------------------------------------------------------------------
+-- The tree's layout
+--------------------------------------------------------------------------------
 
 local function CopyList(source)
 	local copy = {}
@@ -207,56 +297,18 @@ local function CopyList(source)
 	return copy
 end
 
-local function SharesGroup(left, right)
-	if not left or not right or not left[1] or not right[1] then
-		return false
-	end
-	for _, groupID in ipairs(left) do
-		for _, otherID in ipairs(right) do
-			if groupID == otherID then
-				return true
-			end
-		end
-	end
-	return false
+-- Only straight edges are drawn, as arrows.
+local function ShowsArrow(visualStyle)
+	return visualStyle == nil or visualStyle == Enum.TraitEdgeVisualStyle.Straight
 end
 
-local function TotalSpent()
-	local spent = 0
-	for _, stored in pairs(ns.ranks) do
-		spent = spent + (stored.ranks or 0)
-	end
-	return spent
-end
-
-local function Unspent()
-	return ns.budget - TotalSpent()
-end
-
+-- The tree headers' groups, one per tree.
 local function HeaderGroupIDs(frame)
 	local headers = {}
-	local seen = {}
-	local function add(groupID)
-		if groupID and not seen[groupID] then
-			seen[groupID] = true
-			headers[#headers + 1] = groupID
-		end
-	end
-	if frame then
-		local treeID = frame:GetTalentTreeID()
-		if treeID then
-			local ok, infos = pcall(C_Traits.GetGroupDisplayInfoByTreeID, treeID)
-			if ok and type(infos) == "table" then
-				for _, info in ipairs(infos) do
-					add(info.groupID)
-				end
-			end
-		end
-	end
-	if frame and frame.treeHeaders then
-		for _, header in ipairs(frame.treeHeaders) do
-			local info = header.displayInfo
-			add(info and info.groupID)
+	local treeID = frame:GetTalentTreeID()
+	if treeID then
+		for _, info in ipairs(C_Traits.GetGroupDisplayInfoByTreeID(treeID)) do
+			headers[#headers + 1] = info.groupID
 		end
 	end
 	return headers
@@ -306,13 +358,15 @@ local function BuildComponents(frame, configID)
 		groupIDs[#groupIDs + 1] = groupID
 	end
 	for _, structure in pairs(ns.structure) do
-		for _, groupID in ipairs(structure.groupIDs or {}) do
+		for _, groupID in ipairs(structure.groupIDs) do
 			if not seenGroup[groupID] then
 				seenGroup[groupID] = true
 				groupIDs[#groupIDs + 1] = groupID
 			end
 		end
 	end
+	-- The talents' own groups are not only the headers the talent window asks about,
+	-- so a group the client does not take only leaves its currency unread.
 	if configID and #groupIDs > 0 then
 		local ok, infos = pcall(C_Traits.GetGroupCurrencyInfo, configID, groupIDs)
 		if ok and type(infos) == "table" then
@@ -392,7 +446,7 @@ local function BuildComponents(frame, configID)
 		-- The talent frame's own rule: a talent is in a header when its group list contains that header.
 		local headerID = nil
 		local headerCount = 0
-		for _, groupID in ipairs(structure.groupIDs or {}) do
+		for _, groupID in ipairs(structure.groupIDs) do
 			if headerSet[groupID] then
 				headerCount = headerCount + 1
 				headerID = groupID
@@ -402,7 +456,7 @@ local function BuildComponents(frame, configID)
 			ns.treeOf[nodeID] = headerID
 		else
 			local hints = {}
-			for _, groupID in ipairs(structure.groupIDs or {}) do
+			for _, groupID in ipairs(structure.groupIDs) do
 				AddHint(hints, ns.groupTree[groupID])
 			end
 			for _, groupID in ipairs(ns.currencyGroupsOf[nodeID] or {}) do
@@ -432,7 +486,7 @@ local function BuildComponents(frame, configID)
 	for nodeID, structure in pairs(ns.structure) do
 		local treeID = ns.treeOf[nodeID]
 		if treeID then
-			for _, groupID in ipairs(structure.groupIDs or {}) do
+			for _, groupID in ipairs(structure.groupIDs) do
 				Note(groupHints, groupID, treeID)
 			end
 			if structure.subTreeID then
@@ -456,7 +510,7 @@ local function BuildComponents(frame, configID)
 	end
 	local firstInGroup = {}
 	local function claim(key, nodeID)
-		if not key or key == false then
+		if not key then
 			return
 		end
 		local first = firstInGroup[key]
@@ -472,7 +526,7 @@ local function BuildComponents(frame, configID)
 		if treeID then
 			claim(treeID, nodeID)
 		else
-			for _, groupID in ipairs(structure.groupIDs or {}) do
+			for _, groupID in ipairs(structure.groupIDs) do
 				if not Spans(groupHints, groupID) then
 					local mapped = ns.groupTree[groupID]
 					if mapped then
@@ -532,11 +586,8 @@ local function SpentAbove(nodeID)
 	end
 	local spent = 0
 	for otherID, stored in pairs(ns.ranks) do
-		if otherID ~= nodeID and SameTree(nodeID, otherID) then
-			local structure = ns.structure[otherID]
-			if IsAbove(structure, target) then
-				spent = spent + (stored.ranks or 0)
-			end
+		if otherID ~= nodeID and SameTree(nodeID, otherID) and IsAbove(ns.structure[otherID], target) then
+			spent = spent + stored.ranks
 		end
 	end
 	return spent
@@ -646,11 +697,8 @@ local function CombineNode(info, extra)
 end
 
 local function ButtonNode(frame, nodeID)
-	local button = frame and frame:GetTalentButtonByNodeID(nodeID)
-	if not button then
-		return nil
-	end
-	return button:GetNodeInfo()
+	local button = frame:GetTalentButtonByNodeID(nodeID)
+	return button and button:GetNodeInfo()
 end
 
 local function RebuildIncoming()
@@ -665,6 +713,7 @@ local function RebuildIncoming()
 			list[#list + 1] = {
 				source = sourceID,
 				edgeType = edge.edgeType,
+				visualStyle = edge.visualStyle,
 			}
 		end
 	end
@@ -673,11 +722,7 @@ end
 -- Primary and Secondary are the calculator's own slots. Both read the tree on
 -- screen. Before the frame has a config, the active spec's config has the same tree.
 local function PlanConfigID(frame)
-	local configID = frame and frame:GetConfigID()
-	if configID then
-		return configID
-	end
-	return C_SpecializationInfo.GetCombatConfigIDForSpecGroup(ActiveSpecGroup())
+	return frame:GetConfigID() or C_SpecializationInfo.GetCombatConfigIDForSpecGroup(C_SpecializationInfo.GetActiveSpecGroup() or 1)
 end
 
 local function PlanTreeID(frame, configID)
@@ -687,11 +732,12 @@ local function PlanTreeID(frame, configID)
 			return info.treeIDs[1]
 		end
 	end
-	return frame and frame:GetTalentTreeID()
+	return frame:GetTalentTreeID()
 end
 
--- The tree's gate list is fixed layout data. The frame's own gate widgets are not
--- read: the game shows those only while the character has not met them.
+-- The tree's gate list is fixed layout data: where each gate goes and its condition.
+-- The frame's own gate widgets are not read: the game shows those only while the
+-- character has not met them.
 local function TreeGates(frame, configID)
 	local treeID = PlanTreeID(frame, configID)
 	if configID and treeID then
@@ -700,7 +746,7 @@ local function TreeGates(frame, configID)
 			return info.gates
 		end
 	end
-	if frame and frame:GetConfigID() == configID then
+	if frame:GetConfigID() == configID then
 		local cached = frame:GetTreeInfo()
 		if cached and cached.gates and cached.gates[1] then
 			return cached.gates
@@ -712,8 +758,6 @@ end
 -- Row 1 of a tree is open. Every row after it needs POINTS_PER_ROW more points
 -- spent in the rows above it, in that same tree. Only the tree's layout is read,
 -- never the character's talents.
-local POINTS_PER_ROW = 5
-
 local function ApplyRowRequirements(frame)
 	local configID = PlanConfigID(frame)
 	BuildComponents(frame, configID)
@@ -768,7 +812,7 @@ local function ApplyRowRequirements(frame)
 		end
 	end
 
-	-- The gate tooltip uses the wording of the nearest tree gate on or above that row.
+	-- The tooltip words the row requirement like the nearest tree gate on or above that row.
 	local gates = TreeGates(frame, configID)
 	for nodeID, structure in pairs(ns.structure) do
 		if structure.requiredSpent then
@@ -786,6 +830,8 @@ local function ApplyRowRequirements(frame)
 	end
 end
 
+-- Reads the tree on screen: every node's layout, ranks, arrows and groups. Only fixed
+-- data is kept, never the character's points.
 local function RememberFrame(frame)
 	local configID = PlanConfigID(frame)
 	local treeID = PlanTreeID(frame, configID)
@@ -794,12 +840,8 @@ local function RememberFrame(frame)
 		local saved = ns.structure
 		ns.structure = {}
 		for _, nodeID in ipairs(nodeIDs) do
-			local ok, info = pcall(C_Traits.GetNodeInfo, configID, nodeID)
-			if not ok then
-				info = nil
-			end
 			-- The button is the same talent the player is looking at, for either spec.
-			info = CombineNode(info, ButtonNode(frame, nodeID))
+			local info = CombineNode(C_Traits.GetNodeInfo(configID, nodeID), ButtonNode(frame, nodeID))
 			if type(info) == "table" and info.ID and info.ID ~= 0 and info.isVisible ~= false then
 				RememberNode(info)
 			end
@@ -818,11 +860,16 @@ local function RememberFrame(frame)
 	ApplyRowRequirements(frame)
 end
 
+--------------------------------------------------------------------------------
+-- The rules
+--------------------------------------------------------------------------------
+
 local function SourceRank(nodeID)
 	local stored = ns.ranks[nodeID]
 	return stored and stored.ranks or 0
 end
 
+-- A talent opens its arrows once maxed. A one-rank talent needs its point.
 local function SourceMaxed(nodeID)
 	local structure = ns.structure[nodeID]
 	local ranks = SourceRank(nodeID)
@@ -865,54 +912,62 @@ local function EdgesAllow(nodeID)
 	return true
 end
 
+-- Forever's rule for the talent tooltip (ShouldAddEdgeRequirementsToTooltip): a talent
+-- with an arrow from a talent that is not maxed yet needs all preceding talents.
+local function MissingPrecedingTalent(nodeID)
+	for _, edge in ipairs(ns.incoming[nodeID] or {}) do
+		local rankLink = edge.edgeType == REQUIRED_EDGE or edge.edgeType == SUFFICIENT_EDGE
+		if rankLink and ShowsArrow(edge.visualStyle) and not SourceMaxed(edge.source) then
+			return true
+		end
+	end
+	return false
+end
+
 local function GateOpen(nodeID)
 	local structure = ns.structure[nodeID]
-	if not structure then
-		return true
+	local required = structure and structure.requiredSpent or 0
+	return required <= 0 or SpentAbove(nodeID) >= required
+end
+
+-- The points the plan still needs above a talent's row before that row opens, or nil
+-- on a tree's first row.
+local function PointsLeft(nodeID)
+	local structure = ns.structure[nodeID]
+	local required = structure and structure.requiredSpent
+	if not required or required <= 0 then
+		return nil
 	end
-	local required = structure.requiredSpent or 0
-	if required > 0 and SpentAbove(nodeID) < required then
-		return false
-	end
-	return true
+	return math.max(0, required - SpentAbove(nodeID))
 end
 
 local function CanAddRank(nodeID)
 	local structure = ns.structure[nodeID]
-	if not structure or structure.maxRanks <= 0 then
+	if not structure or structure.maxRanks <= 0 or SourceRank(nodeID) >= structure.maxRanks or Unspent() < 1 then
 		return false
 	end
-	if SourceRank(nodeID) >= structure.maxRanks then
+	if not GateOpen(nodeID) or not EdgesAllow(nodeID) then
 		return false
 	end
-	if Unspent() < 1 then
-		return false
-	end
-	if not GateOpen(nodeID) then
-		return false
-	end
-	if not EdgesAllow(nodeID) then
-		return false
+	-- An exclusive arrow from this talent shuts out a talent that already has points.
+	for _, edge in ipairs(structure.edges) do
+		if edge.edgeType == EXCLUSIVE_EDGE and SourceRank(edge.target) > 0 then
+			return false
+		end
 	end
 	return true
 end
 
 local function RankHolds(nodeID)
-	local stored = ns.ranks[nodeID]
-	if not stored or (stored.ranks or 0) <= 0 or not ns.structure[nodeID] then
-		return false
-	end
-	return EdgesAllow(nodeID) and GateOpen(nodeID)
+	return ns.ranks[nodeID] ~= nil and ns.structure[nodeID] ~= nil and EdgesAllow(nodeID) and GateOpen(nodeID)
 end
 
--- The loaded selection only. Every talent that would still have points, in all
--- three trees, has to stay legal. The other selection is a different rank table.
+-- The loaded slot only. Every talent that would still have points, in all
+-- three trees, has to stay legal. The other slot is a different rank table.
 local function SelectionStaysLegal(nodeID, ranks)
 	local stored = ns.ranks[nodeID]
-	local previousRanks = stored and stored.ranks or 0
-	local entryID = stored and stored.entryID or 0
 	if ranks > 0 then
-		ns.ranks[nodeID] = { ranks = ranks, entryID = entryID }
+		ns.ranks[nodeID] = { ranks = ranks, entryID = stored and stored.entryID or 0 }
 	else
 		ns.ranks[nodeID] = nil
 	end
@@ -923,21 +978,26 @@ local function SelectionStaysLegal(nodeID, ranks)
 			break
 		end
 	end
-	if previousRanks > 0 then
-		ns.ranks[nodeID] = stored
-	else
-		ns.ranks[nodeID] = nil
-	end
+	ns.ranks[nodeID] = stored
 	return allowed
 end
 
+-- A click adds a point when the talent can take one and every other talent stays legal.
+local function CanAddPoint(nodeID)
+	return CanAddRank(nodeID) and SelectionStaysLegal(nodeID, SourceRank(nodeID) + 1)
+end
+
+-- A right click takes a point off unless that leaves a deeper talent short of its
+-- row's points or breaks an arrow.
+local function CanRemovePoint(nodeID)
+	local ranks = SourceRank(nodeID)
+	return ranks > 0 and SelectionStaysLegal(nodeID, ranks - 1)
+end
+
 local function MarkOutgoing(affected, nodeID)
-	if not nodeID then
-		return
-	end
 	affected[nodeID] = true
 	local structure = ns.structure[nodeID]
-	if not structure or not structure.edges then
+	if not structure then
 		return
 	end
 	for _, edge in ipairs(structure.edges) do
@@ -1027,7 +1087,7 @@ local function FitPlanToTree()
 		end
 	end
 	Prune()
-	while TotalSpent() > ns.budget do
+	while TotalSpent() > PLAN_BUDGET do
 		local nodeID = DeepestPlannedNode()
 		local stored = ns.ranks[nodeID]
 		Note(nodeID, "budget")
@@ -1073,259 +1133,89 @@ local function LevelRequiredText(spent)
 	return tostring(math.min(MAX_LEVEL, FIRST_TALENT_LEVEL - 1 + spent))
 end
 
-local function LevelLabel(frame)
-	local display = frame.ClassCurrencyDisplay
-	local unspent = display and display.UnspentLabel
-	if not display or not unspent then
+--------------------------------------------------------------------------------
+-- Talent details
+--------------------------------------------------------------------------------
+
+-- TalentUtil.GetTalentName: the definition's override, then the spell name.
+-- A talent with neither shows its sub tree's name.
+local function TalentDisplayName(definition, subTree)
+	local name = definition and TalentUtil.GetTalentName(definition.overrideName, definition.spellID)
+	if (type(name) ~= "string" or name == "") and subTree then
+		name = subTree.name
+	end
+	if type(name) ~= "string" or name == "" then
 		return nil
 	end
-	if not display.calculatorLevelText then
-		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
-		text:SetJustifyH("RIGHT")
-		text:SetPoint("RIGHT", unspent, "LEFT", -20, 0)
-		text:Hide()
-		display.calculatorLevelText = text
+	return name
+end
+
+-- The talent behind an entry: its name, spell, and what its icon is drawn from.
+local function EntryVisual(frame, entryID)
+	local configID = frame:GetConfigID()
+	local entry = configID and entryID and C_Traits.GetEntryInfo(configID, entryID)
+	if not entry then
+		return { entryID = entryID }
 	end
-	return display.calculatorLevelText
+	-- GetDefinitionInfo takes the definition id only. The config id is not an argument.
+	local definition = entry.definitionID and C_Traits.GetDefinitionInfo(entry.definitionID)
+	local subTree = entry.subTreeID and C_Traits.GetSubTreeInfo(configID, entry.subTreeID)
+	return {
+		entryID = entryID,
+		name = TalentDisplayName(definition, subTree),
+		spellID = definition and definition.spellID,
+		definition = definition,
+		subTree = subTree,
+	}
 end
 
--- The addon's version on the left end of the points row, mirroring the row's
--- inset from the right. The row sits 6 below the tree area's top, centered on its tallest part.
-local function VersionLabel(frame)
-	local display = frame.ClassCurrencyDisplay
-	if not display.calculatorVersionText then
-		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
-		text:SetJustifyH("LEFT")
-		text:SetText("v" .. VERSION)
-		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
-		text:SetPoint("LEFT", frame.BackgroundBorder, "TOPLEFT", 20, -6 - rowHeight / 2)
-		text:Hide()
-		display.calculatorVersionText = text
+local function ApplyIcon(texture, visual)
+	local icon, isAtlas = TalentButtonUtil.CalculateIconTextureFromInfo(visual.definition, visual.subTree)
+	if isAtlas and icon then
+		texture:SetAtlas(icon)
+	elseif icon then
+		texture:SetTexture(icon)
 	end
-	return display.calculatorVersionText
-end
-
--- The addon's name in the game's gold title font, centered on the same points row.
-local function TitleLabel(frame)
-	local display = frame.ClassCurrencyDisplay
-	if not display.calculatorTitleText then
-		local text = display:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
-		text:SetJustifyH("CENTER")
-		text:SetText(ADDON_TITLE)
-		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
-		text:SetPoint("CENTER", frame.BackgroundBorder, "TOP", 0, -6 - rowHeight / 2)
-		text:Hide()
-		display.calculatorTitleText = text
-	end
-	return display.calculatorTitleText
-end
-
-local function PlanMatchesSaved()
-	local savedRanks = SavedRanks(ns.slot or 1) or {}
-	for nodeID, stored in pairs(ns.ranks) do
-		local ranks = stored.ranks or 0
-		if ranks > 0 then
-			local saved = savedRanks[nodeID]
-			if not saved or saved.ranks ~= ranks or saved.entryID ~= (stored.entryID or 0) then
-				return false
-			end
-			savedRanks[nodeID] = nil
-		end
-	end
-	return next(savedRanks) == nil
-end
-
-local function HasSavedBuild()
-	return SavedRanks(ns.slot or 1) ~= nil
-end
-
-local function UpdateSaveButton(frame)
-	if not frame then
+	-- The icon can be missing until the spell's data has loaded. Try again then.
+	if icon or not visual.spellID then
 		return
 	end
-	local matches = PlanMatchesSaved()
-	local save = frame.calculatorSaveButton
-	if save then
-		if matches then
-			save:Disable()
-		else
-			save:Enable()
-		end
-	end
-	local load = frame.calculatorLoadButton
-	if load then
-		if HasSavedBuild() and not matches then
-			load:Enable()
-		else
-			load:Disable()
-		end
-	end
-	local clear = frame.calculatorClearButton
-	if clear then
-		local hasPoints = false
-		for _, stored in pairs(ns.ranks) do
-			if (stored.ranks or 0) > 0 then
-				hasPoints = true
-				break
-			end
-		end
-		if hasPoints then
-			clear:Enable()
-		else
-			clear:Disable()
-		end
-	end
-end
-
-local function PlanAmountText(frame)
-	local display = frame.ClassCurrencyDisplay
-	local container = display and display.CurrentAmountContainer
-	local amount = container and container.CurrencyAmount
-	if not display or not container or not amount then
-		return nil, nil
-	end
-	if not display.calculatorAmountText then
-		local text = container:CreateFontString(nil, "OVERLAY", "Game32Font_Shadow2")
-		text:SetPoint("CENTER", container, "CENTER", 0, 0)
-		text:SetJustifyH("CENTER")
-		text:SetJustifyV("MIDDLE")
-		text:Hide()
-		display.calculatorAmountText = text
-	end
-	return display.calculatorAmountText, amount
-end
-
-local function HeaderSpentText(header)
-	if not header.Text then
-		return nil
-	end
-	if not header.calculatorSpentText then
-		local text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-		text:SetPoint("CENTER", header.Text, "CENTER", 0, 0)
-		text:SetJustifyH("CENTER")
-		text:SetJustifyV("MIDDLE")
-		text:Hide()
-		header.calculatorSpentText = text
-	end
-	return header.calculatorSpentText
-end
-
-local function ShowCharacterTalentNumbers(frame)
-	local display = frame.ClassCurrencyDisplay
-	if display and display.calculatorAmountText then
-		display.calculatorAmountText:Hide()
-	end
-	local amount = display and display.CurrentAmountContainer and display.CurrentAmountContainer.CurrencyAmount
-	if amount then
-		amount:Show()
-	end
-	for _, header in ipairs(frame.treeHeaders or {}) do
-		if header.calculatorSpentText then
-			header.calculatorSpentText:Hide()
-		end
-		if header.Text then
-			header.Text:Show()
-		end
-	end
-end
-
-local function PaintSpent(frame)
-	local planAmount, realAmount = PlanAmountText(frame)
-	if planAmount and realAmount then
-		local unspent = math.max(0, Unspent())
-		planAmount:SetText(unspent)
-		if unspent > 0 then
-			planAmount:SetTextColor(GREEN_FONT_COLOR:GetRGBA())
-		else
-			planAmount:SetTextColor(GRAY_FONT_COLOR:GetRGBA())
-		end
-		planAmount:Show()
-		realAmount:Hide()
-	end
-	local levelText = LevelLabel(frame)
-	if levelText then
-		levelText:SetText("Level required: " .. LevelRequiredText(TotalSpent()))
-		levelText:Show()
-	end
-	VersionLabel(frame):Show()
-	TitleLabel(frame):Show()
-	UpdateSaveButton(frame)
-	if not frame.treeHeaders then
+	local spell = Spell:CreateFromSpellID(visual.spellID)
+	if spell:IsSpellDataCached() then
 		return
 	end
-	for _, header in ipairs(frame.treeHeaders) do
-		local groupID = header.displayInfo and header.displayInfo.groupID
-		if groupID and header.Text then
-			local spent = 0
-			for nodeID, stored in pairs(ns.ranks) do
-				local structure = ns.structure[nodeID]
-				local knownTree = ns.treeOf and ns.treeOf[nodeID]
-				if knownTree then
-					-- The same tree the row gates count this talent in.
-					if knownTree == groupID then
-						spent = spent + (stored.ranks or 0)
-					end
-				elseif structure then
-					local counts = false
-					for _, headerGroup in ipairs(structure.groupIDs or {}) do
-						local mapped = ns.groupTree and ns.groupTree[headerGroup]
-						if headerGroup == groupID or mapped == groupID then
-							counts = true
-							break
-						end
-					end
-					if not counts and ns.currencyGroupsOf then
-						for _, headerGroup in ipairs(ns.currencyGroupsOf[nodeID] or {}) do
-							if headerGroup == groupID then
-								counts = true
-								break
-							end
-						end
-					end
-					if counts then
-						spent = spent + (stored.ranks or 0)
-					end
-				end
-			end
-			local planText = HeaderSpentText(header)
-			if planText then
-				planText:SetText(spent)
-				planText:Show()
-				header.Text:Hide()
-			end
-		end
-	end
+	spell:ContinueWithCancelOnSpellLoad(function()
+		ApplyIcon(texture, visual)
+	end)
 end
 
-local function EntryCap(frame, entryID)
-	if not frame or not entryID then
-		return 1
-	end
-	local info = frame:GetAndCacheEntryInfo(entryID)
-	local cap = info and info.maxRanks or 1
-	if cap < 1 then
-		return 1
-	end
-	return cap
-end
-
-local function ResolvePlanEntries(frame, nodeID, nodeInfo)
-	local ranks = SourceRank(nodeID)
+-- A talent named in chat: its spell link, which can be hovered, else its name.
+local function TalentText(frame, nodeID, entryID, missing)
 	local structure = ns.structure[nodeID]
-	local maxRanks = structure and structure.maxRanks or nodeInfo.maxRanks or 0
-	if maxRanks > 0 and ranks > maxRanks then
-		ranks = maxRanks
+	local shownID = entryID and entryID > 0 and entryID or (structure and structure.entryIDs[1])
+	if not shownID then
+		return missing
 	end
-	local stored = ns.ranks[nodeID]
-	local entryIDs = structure and structure.entryIDs
-	if not entryIDs or not entryIDs[1] then
-		entryIDs = nodeInfo.entryIDs
-	end
-	local nodeType = structure and structure.nodeType or nodeInfo.type
-	local tiered = nodeType == Enum.TraitNodeType.Tiered
+	local visual = EntryVisual(frame, shownID)
+	return visual.spellID and C_Spell.GetSpellLink(visual.spellID) or visual.name or missing
+end
+
+-- How many ranks one entry of a tiered talent holds.
+local function EntryCap(frame, entryID)
+	local configID = frame:GetConfigID()
+	local info = configID and C_Traits.GetEntryInfo(configID, entryID)
+	return math.max(1, info and info.maxRanks or 1)
+end
+
+-- The entries the tooltip describes, picked like the game's tooltip picks them: the
+-- current rank's entry and the next rank's. A tiered talent moves through its entries.
+local function ResolvePlanEntries(frame, nodeID)
+	local structure = ns.structure[nodeID]
+	local ranks = math.min(SourceRank(nodeID), structure.maxRanks)
+	local entryIDs = structure.entryIDs
 	local currentID, currentRank, nextID, nextRank
 
-	if tiered and entryIDs and entryIDs[1] then
+	if structure.nodeType == Enum.TraitNodeType.Tiered and entryIDs[1] then
 		local remaining = ranks
 		for _, entryID in ipairs(entryIDs) do
 			local cap = EntryCap(frame, entryID)
@@ -1345,17 +1235,11 @@ local function ResolvePlanEntries(frame, nodeID, nodeInfo)
 				break
 			end
 		end
-		if not currentID and entryIDs[1] then
-			currentID, currentRank = entryIDs[1], 0
-		end
 	else
-		if stored and stored.entryID and stored.entryID > 0 then
-			currentID = stored.entryID
-		elseif entryIDs then
-			currentID = entryIDs[1]
-		end
+		local stored = ns.ranks[nodeID]
+		currentID = stored and stored.entryID > 0 and stored.entryID or entryIDs[1]
 		currentRank = ranks
-		if currentID and maxRanks > ranks then
+		if currentID and structure.maxRanks > ranks then
 			nextID, nextRank = currentID, ranks + 1
 		end
 	end
@@ -1363,104 +1247,21 @@ local function ResolvePlanEntries(frame, nodeID, nodeInfo)
 	return ranks, currentID, currentRank, nextID, nextRank
 end
 
-local function TreeName(frame, structure)
-	if not frame or not structure or not structure.groupIDs then
-		return nil
-	end
-	for _, header in ipairs(frame.treeHeaders or {}) do
-		local info = header.displayInfo
-		local name = info and info.displayName
-		if info and name and name ~= "" then
-			for _, groupID in ipairs(structure.groupIDs) do
-				if groupID == info.groupID then
-					return name
-				end
-			end
-		end
-	end
-	return nil
-end
-
-local function PointsLeft(nodeID)
-	local structure = nodeID and ns.structure[nodeID]
-	local total = structure and structure.requiredSpent
-	if not total or total <= 0 then
-		return nil
-	end
-	local left = total - SpentAbove(nodeID)
-	if left < 0 then
-		left = 0
-	end
-	return left
-end
-
--- ClassTalentsFrameMixin:GetTraitTreeName supplies the "Fire Talents" name the client formats in.
-local function TraitTreeName(frame, nodeID)
-	local structure = nodeID and ns.structure[nodeID]
-	local groupIDs = structure and structure.groupIDs
-	if frame then
-		local name = frame:GetTraitTreeName(frame:GetTalentTreeID(), groupIDs)
-		if name and name ~= "" then
-			return name
-		end
-	end
-	return TreeName(frame, structure) or ""
-end
-
--- Same sentence as C_Traits.GetConditionInfo: tooltipFormat filled with the
--- points still missing in this plan, then the client's red color.
-local function ClientGateText(frame, nodeID, condInfo)
-	local left = PointsLeft(nodeID)
-	if not left or left <= 0 then
-		return nil
-	end
-	local treeName = TraitTreeName(frame, nodeID)
-	local formatString = condInfo and condInfo.tooltipFormat
-	local line
-	if type(formatString) == "string" and string.find(formatString, "%%") then
-		local ok, formatted = pcall(string.format, formatString, left, treeName)
-		if not ok then
-			ok, formatted = pcall(string.format, formatString, left)
-		end
-		if ok then
-			line = formatted
-		end
-	end
-	if not line then
-		local ok, formatted = pcall(string.format, TALENT_FRAME_GATE_TOOLTIP_FORMAT, left)
-		if ok then
-			line = formatted
-		end
-	end
-	if line then
-		line = C_StringUtil.StripHyperlinks(line)
-	end
-	return line
-end
-
-local ChangeRank
-local ChooseEntry
-
-local function AddGateLine(tooltip, line)
-	if line and line ~= "" then
-		GameTooltip_AddErrorLine(tooltip, line)
-	end
-end
-
+-- The condition behind a talent's row requirement: the nearest tree gate on or above
+-- its row, then the talent's own conditions. Read from C_Traits directly, so the
+-- talent window's own cache is left to the game.
 local function GateCondInfo(frame, nodeID)
+	local configID = frame:GetConfigID()
 	local structure = ns.structure[nodeID]
-	if not structure or not frame then
+	if not configID or not structure then
 		return nil
 	end
-	local ids = {}
-	if structure.gateConditionID then
-		ids[#ids + 1] = structure.gateConditionID
-	end
-	for _, condID in ipairs(structure.conditionIDs or {}) do
+	local ids = { structure.gateConditionID }
+	for _, condID in ipairs(structure.conditionIDs) do
 		ids[#ids + 1] = condID
 	end
 	for _, condID in ipairs(ids) do
-		local info = frame:GetAndCacheCondInfo(condID)
+		local info = C_Traits.GetConditionInfo(configID, condID)
 		if info and type(info.tooltipFormat) == "string" and string.find(info.tooltipFormat, "%", 1, true) then
 			return info
 		end
@@ -1468,188 +1269,128 @@ local function GateCondInfo(frame, nodeID)
 	return nil
 end
 
--- TalentUtil.GetTalentName: the definition's override, then the spell name.
--- A talent with neither shows its sub tree's name.
-local function TalentDisplayName(definition, subTree)
-	local name = definition and TalentUtil.GetTalentName(definition.overrideName, definition.spellID)
-	if (type(name) ~= "string" or name == "") and subTree then
-		name = subTree.name
-	end
-	if type(name) ~= "string" or name == "" then
+-- The row requirement as the game words it for this talent: the condition's sentence
+-- with the points the plan still needs and the tree's name (C_Traits.GetConditionInfo
+-- fills it the same way), or the game's gate sentence.
+local function GateText(frame, nodeID)
+	local left = PointsLeft(nodeID)
+	if not left or left <= 0 then
 		return nil
 	end
-	return name
+	local condInfo = GateCondInfo(frame, nodeID)
+	if condInfo then
+		-- The sentence is client data, so one that does not take these values falls back.
+		local treeName = frame:GetTraitTreeName(frame:GetTalentTreeID(), ns.structure[nodeID].groupIDs) or ""
+		local ok, text = pcall(string.format, condInfo.tooltipFormat, left, treeName)
+		if ok then
+			return C_StringUtil.StripHyperlinks(text)
+		end
+	end
+	return TALENT_FRAME_GATE_TOOLTIP_FORMAT:format(left)
 end
 
-local function EntryVisual(frame, entryID)
-	local configID = frame and frame:GetConfigID()
-	if not configID or not entryID then
-		return { entryID = entryID }
-	end
-	local entry = C_Traits.GetEntryInfo(configID, entryID)
-	if not entry then
-		return { entryID = entryID }
-	end
-	-- GetDefinitionInfo takes the definition id only. The config id is not an argument.
-	local definition = entry.definitionID and C_Traits.GetDefinitionInfo(entry.definitionID)
-	local subTree = entry.subTreeID and C_Traits.GetSubTreeInfo(configID, entry.subTreeID)
-	return {
-		entryID = entryID,
-		name = TalentDisplayName(definition, subTree),
-		spellID = definition and definition.spellID,
-		definition = definition,
-		subTree = subTree,
-	}
-end
+--------------------------------------------------------------------------------
+-- Tooltips
+--------------------------------------------------------------------------------
 
-local function ApplyIcon(texture, visual)
-	if not texture or not visual then
-		return
-	end
-	local icon, isAtlas = TalentButtonUtil.CalculateIconTextureFromInfo(visual.definition, visual.subTree)
-	if isAtlas and icon then
-		texture:SetAtlas(icon)
-	elseif icon then
-		texture:SetTexture(icon)
-	end
-	-- The icon can be missing until the spell's data has loaded. Try again then.
-	if icon or not visual.spellID then
-		return
-	end
-	local spell = Spell:CreateFromSpellID(visual.spellID)
-	if not spell or spell:IsSpellDataCached() then
-		return
-	end
-	spell:ContinueWithCancelOnSpellLoad(function()
-		ApplyIcon(texture, visual)
-	end)
-end
-
-local function PlanSpendText(frame, nodeID)
-	local ranks = SourceRank(nodeID)
-	local structure = ns.structure[nodeID]
-	local maxRanks = structure and structure.maxRanks or 0
-	if ranks < 1 and not CanAddRank(nodeID) then
-		return ""
-	end
-	if ranks <= 1 and maxRanks == 1 and frame:ShouldHideSingleRankNumbers() then
-		return ""
-	end
-	if ranks > 0 or CanAddRank(nodeID) then
-		return tostring(ranks)
-	end
-	return ""
-end
-
-local function PlanRefundInvalid(nodeID)
-	if SourceRank(nodeID) <= 0 then
-		return false, nil
-	end
-	if not EdgesAllow(nodeID) then
-		return true, TALENT_BUTTON_TOOLTIP_REFUND_INVALID_LINKS_ERROR
-	end
-	return false, nil
-end
-
+-- The talent's tooltip, built like the game's (TalentDisplayMixin:SetTooltipInternal with
+-- TalentButtonSpendMixin): the talent tooltip's backdrop, name, rank, the rank's text,
+-- the next rank, what a click does, then what still holds the talent back.
 local function ShowNodeTooltip(button)
 	local nodeButton = button.planNode or button
 	local frame = nodeButton.calculatorFrame
 	local nodeID = nodeButton.calculatorNodeID
-	local structure = nodeID and ns.structure[nodeID]
-	if not frame or not structure then
+	local structure = ns.structure[nodeID]
+	if not structure then
 		return
 	end
-	local ranks, currentID, currentRank, nextID, nextRank = ResolvePlanEntries(frame, nodeID, {
-		maxRanks = structure.maxRanks,
-		type = structure.nodeType,
-		entryIDs = structure.entryIDs,
-	})
-	if button.entryID and button.entryID > 0 then
-		currentID = button.entryID
-		currentRank = (ns.ranks[nodeID] and ns.ranks[nodeID].entryID == button.entryID) and ranks or 0
+	local ranks, currentID, currentRank, nextID, nextRank = ResolvePlanEntries(frame, nodeID)
+	-- A choice of a choice talent describes its own entry.
+	local stored = ns.ranks[nodeID]
+	local entryID = button.entryID
+	local chosen = entryID ~= nil and stored ~= nil and stored.entryID == entryID
+	if entryID then
+		currentID = entryID
+		currentRank = chosen and ranks or 0
 	end
-	GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+
+	local tooltip = GameTooltip
+	tooltip:SetOwner(button, "ANCHOR_RIGHT", 0, 0)
+	SharedTooltip_SetBackdropStyle(tooltip, GAME_TOOLTIP_BACKDROP_STYLE_CLASS_TALENT)
 	local visual = button.entryVisual
-	local definition = visual and visual.definition
-	local spellID = visual and visual.spellID
-	local name = TalentDisplayName(definition, visual and visual.subTree)
-	if name then
-		GameTooltip_SetTitle(GameTooltip, name)
+	if visual and visual.name then
+		GameTooltip_SetTitle(tooltip, visual.name)
 	end
 	local rankShown = HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(ranks)
-	GameTooltip_AddHighlightLine(GameTooltip, TALENT_BUTTON_TOOLTIP_RANK_FORMAT:format(rankShown, structure.maxRanks or 0))
-	local subtext = definition and TalentUtil.GetTalentSubtext(definition.overrideSubtext, spellID)
-	if subtext and subtext ~= "" then
-		GameTooltip_AddBlankLineToTooltip(GameTooltip)
-		GameTooltip_AddColoredLine(GameTooltip, subtext, DISABLED_FONT_COLOR)
-	end
-	-- AppendInfo is how the talent frame fills the spell text once that data has loaded.
+	GameTooltip_AddHighlightLine(tooltip, TALENT_BUTTON_TOOLTIP_RANK_FORMAT:format(rankShown, structure.maxRanks))
+	-- AppendInfo is how the talent window fills in a rank's text once that data has loaded.
 	if currentID then
-		GameTooltip_AddBlankLineToTooltip(GameTooltip)
-		GameTooltip:AppendInfo("GetTraitEntry", currentID, currentRank or 0)
-	elseif definition then
-		local description = TalentUtil.GetTalentDescription(definition.overrideDescription, spellID)
-		if description and description ~= "" then
-			GameTooltip:AddLine(description, nil, nil, nil, true)
-		end
+		GameTooltip_AddBlankLineToTooltip(tooltip)
+		tooltip:AppendInfo("GetTraitEntry", currentID, currentRank)
 	end
 	if nextID and ranks > 0 then
-		GameTooltip_AddBlankLineToTooltip(GameTooltip)
-		GameTooltip_AddHighlightLine(GameTooltip, TALENT_BUTTON_TOOLTIP_NEXT_RANK)
-		GameTooltip:AppendInfo("GetTraitEntry", nextID, nextRank or 0)
+		GameTooltip_AddBlankLineToTooltip(tooltip)
+		GameTooltip_AddHighlightLine(tooltip, TALENT_BUTTON_TOOLTIP_NEXT_RANK)
+		tooltip:AppendInfo("GetTraitEntry", nextID, nextRank)
 	end
-	local left = PointsLeft(nodeID)
-	if left and left > 0 then
-		AddGateLine(GameTooltip, ClientGateText(frame, nodeID, GateCondInfo(frame, nodeID)))
+
+	local canAdd, canRemove
+	if entryID and stored then
+		-- On a choice talent with its point, the taken choice can give the point back
+		-- and any other choice can take it over.
+		canAdd = not chosen
+		canRemove = chosen and CanRemovePoint(nodeID)
+	else
+		canAdd = CanAddRank(nodeID)
+		canRemove = CanRemovePoint(nodeID)
 	end
-	local invalid, reason = PlanRefundInvalid(nodeID)
-	if invalid and reason then
-		AddGateLine(GameTooltip, reason)
+	if canAdd or canRemove then
+		GameTooltip_AddBlankLineToTooltip(tooltip)
 	end
-	GameTooltip:Show()
+	if canAdd then
+		GameTooltip_AddInstructionLine(tooltip, TALENT_BUTTON_TOOLTIP_PURCHASE_INSTRUCTIONS)
+	elseif canRemove then
+		GameTooltip_AddDisabledLine(tooltip, TALENT_BUTTON_TOOLTIP_REFUND_INSTRUCTIONS)
+	end
+
+	local gateText = GateText(frame, nodeID)
+	if gateText then
+		GameTooltip_AddBlankLineToTooltip(tooltip)
+		GameTooltip_AddErrorLine(tooltip, gateText)
+	end
+	if MissingPrecedingTalent(nodeID) then
+		GameTooltip_AddBlankLineToTooltip(tooltip)
+		GameTooltip_AddErrorLine(tooltip, GENERIC_TRAIT_FRAME_EDGE_REQUIREMENTS_BUTTON_TOOLTIP)
+	end
+	tooltip:Show()
 end
 
+-- TalentFrameGateMixin:OnEnter, with the points this plan still needs.
 local function ShowGateTooltip(gate)
-	local frame = gate.calculatorFrame
-	local nodeID = gate.calculatorNodeID
-	local left = PointsLeft(nodeID)
-	if not frame or not left or left <= 0 then
-		return
-	end
 	GameTooltip:SetOwner(gate, "ANCHOR_LEFT", 4, -4)
-	AddGateLine(GameTooltip, ClientGateText(frame, nodeID, GateCondInfo(frame, nodeID)))
+	GameTooltip_AddErrorLine(GameTooltip, TALENT_FRAME_GATE_TOOLTIP_FORMAT:format(gate.pointsNeeded))
 	GameTooltip:Show()
 end
 
-local function NodePoint(frame, posX, posY)
-	local panX, panY = frame:GetPanOffset()
-	return TalentButtonUtil.TranslateNodePositionsToAnchorPositions(posX or 0, posY or 0, panX or 0, panY or 0)
-end
-
-local function HideWidget(frame, widget)
-	if not widget or not widget.Hide or not widget.IsShown then
+-- After a click, the hovered talent's tooltip is built again for the new plan.
+local function RefreshOpenTooltip()
+	if not GameTooltip:IsShown() then
 		return
 	end
-	frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
-	if frame.calculatorHiddenWidgets[widget] == nil then
-		frame.calculatorHiddenWidgets[widget] = {
-			shown = widget:IsShown(),
-			mouse = widget:IsMouseEnabled(),
-		}
+	local owner = GameTooltip:GetOwner()
+	if owner and (owner.calculatorNodeID or owner.planNode) then
+		ShowNodeTooltip(owner)
 	end
-	if widget.HookScript and not widget.calculatorKeepHidden then
-		widget.calculatorKeepHidden = true
-		widget:HookScript("OnShow", function(self)
-			local owner = self.GetTalentFrame and self:GetTalentFrame() or frame
-			if ShowingCalculator(owner) then
-				self:Hide()
-			end
-		end)
-	end
-	widget:Hide()
-	if widget.EnableMouse then
-		widget:EnableMouse(false)
-	end
+end
+
+--------------------------------------------------------------------------------
+-- The character's tree under the plan
+--------------------------------------------------------------------------------
+
+-- Primary and Secondary use this same frame. Calculator behavior runs only
+-- while its own tab is the one selected.
+local function ShowingCalculator(frame)
+	return frame.calculatorMode and frame:GetTab() == frame.calculatorTabID
 end
 
 -- The talent buttons, arrows, gates and displays the game is using right now.
@@ -1668,32 +1409,45 @@ local function EachTreeWidget(frame, visit)
 	end
 end
 
+-- Hides one of the game's pieces while the plan is on screen, and remembers whether it
+-- was shown. A piece the game shows again meanwhile is hidden again.
+local function HideWidget(frame, widget)
+	frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
+	if frame.calculatorHiddenWidgets[widget] == nil then
+		frame.calculatorHiddenWidgets[widget] = widget:IsShown()
+	end
+	if not widget.calculatorKeepHidden then
+		widget.calculatorKeepHidden = true
+		widget:HookScript("OnShow", function(self)
+			if ShowingCalculator(frame) then
+				frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
+				frame.calculatorHiddenWidgets[self] = true
+				self:Hide()
+			end
+		end)
+	end
+	widget:Hide()
+end
+
 local function HideClientTree(frame)
-	frame.calculatorTreeHidden = true
 	EachTreeWidget(frame, function(widget)
 		HideWidget(frame, widget)
 	end)
 end
 
 -- The game can rebuild its tree while the calculator is open and put pieces back
--- in its pools. Every piece gets its mouse setting back, but only pieces the game
--- still uses are shown again. Gates the game refreshed meanwhile were skipped, since
--- it draws gates only next to visible buttons, so they are redrawn.
+-- in its pools. Only pieces the game still uses are shown again. Gates the game
+-- refreshed meanwhile were skipped, since it draws gates only next to visible
+-- buttons, so they are drawn again.
 local function ShowClientTree(frame)
-	frame.calculatorTreeHidden = false
 	local hidden = frame.calculatorHiddenWidgets
 	frame.calculatorHiddenWidgets = nil
 	if hidden then
-		local inUse = {}
 		EachTreeWidget(frame, function(widget)
-			inUse[widget] = true
-		end)
-		for widget, state in pairs(hidden) do
-			widget:EnableMouse(state.mouse)
-			if inUse[widget] then
-				widget:SetShown(state.shown)
+			if hidden[widget] ~= nil then
+				widget:SetShown(hidden[widget])
 			end
-		end
+		end)
 	end
 	if frame.calculatorGatesStale then
 		frame.calculatorGatesStale = nil
@@ -1701,229 +1455,265 @@ local function ShowClientTree(frame)
 	end
 end
 
-local function NodeClick(frame, nodeID, mouseButton, entryID)
-	if mouseButton == "RightButton" then
-		ChangeRank(frame, nodeID, -1)
-		return
-	end
-	if IsModifiedClick("CHATLINK") then
-		return
-	end
-	local structure = ns.structure[nodeID]
-	local selection = structure and structure.nodeType == Enum.TraitNodeType.Selection
-	if selection or entryID then
-		local chosen = entryID
-		if not chosen or chosen <= 0 then
-			local stored = ns.ranks[nodeID]
-			chosen = stored and stored.entryID or 0
-			if chosen <= 0 and structure and structure.entryIDs then
-				chosen = structure.entryIDs[1]
-			end
-		end
-		ChooseEntry(frame, nodeID, chosen)
-		return
-	end
-	ChangeRank(frame, nodeID, 1)
-end
+--------------------------------------------------------------------------------
+-- The plan's buttons
+--------------------------------------------------------------------------------
 
+local NodeClick
+
+-- The art set of the talent button a plan button stands for. Without a live button,
+-- a choice talent gets the choice art and any other talent the square art.
 local function ArtSet(frame, nodeID)
-	local live = frame and frame:GetTalentButtonByNodeID(nodeID)
+	local live = frame:GetTalentButtonByNodeID(nodeID)
 	if live and live.artSet then
 		return live.artSet
 	end
 	local sets = TalentButtonArtMixin.ArtSet
-	local entryType = live and live.entryInfo and live.entryInfo.type
-	if not entryType and live and live.GetEntryInfo then
-		local info = live:GetEntryInfo()
-		entryType = info and info.type
-	end
-	local types = Enum.TraitNodeEntryType
-	if entryType == types.SpendCircle then
-		return sets.Circle
-	end
-	if entryType == types.SpendCapstoneCircle then
-		return sets.CapstoneCircle
-	end
-	if entryType == types.SpendCapstoneSquare then
-		return sets.CapstoneSquare
-	end
-	if entryType == types.SpendSmallCircle then
-		return sets.LegionSmallCircle
-	end
-	local structure = ns.structure[nodeID]
-	local selection = structure and structure.nodeType == Enum.TraitNodeType.Selection
-	if selection then
-		return sets.Choice
-	end
-	return sets.Square
+	return ns.structure[nodeID].nodeType == Enum.TraitNodeType.Selection and sets.Choice or sets.Square
 end
 
-local function NodeLook(nodeID, entryID)
-	local ranks = SourceRank(nodeID)
-	local stored = ns.ranks[nodeID]
-	local selected = stored and stored.entryID or 0
-	if PlanRefundInvalid(nodeID) then
-		return "refund"
-	end
-	if entryID and ranks > 0 and entryID ~= selected then
-		return "disabled"
-	end
-	if not GateOpen(nodeID) then
-		return "gated"
-	end
-	if not EdgesAllow(nodeID) then
-		return "locked"
-	end
-	if SourceMaxed(nodeID) then
-		return "maxed"
-	end
-	if CanAddRank(nodeID) and ranks < 1 then
-		return "selectable"
-	end
-	if ranks > 0 then
-		return "normal"
-	end
-	return "disabled"
-end
-
-local function BorderAtlas(frame, nodeID, entryID)
-	local art = ArtSet(frame, nodeID)
-	if not art then
-		return nil
-	end
-	local look = NodeLook(nodeID, entryID)
-	if look == "refund" then
-		return art.refundInvalid
-	end
-	if look == "gated" then
-		return art.locked or art.disabled
-	end
-	if look == "selectable" then
-		return art.selectable
-	end
-	if look == "maxed" then
-		return art.maxed
-	end
-	if look == "normal" then
-		return art.normal
-	end
-	return art.disabled
-end
-
-local function ApplyBorder(texture, atlas)
-	if not texture or not atlas then
-		return
-	end
-	texture:ClearAllPoints()
-	texture:SetPoint("CENTER")
-	texture:SetAtlas(atlas, true)
-end
-
--- TalentButtonArtMixin:OnLoad centers this drop shadow and sizes it from the atlas.
-local function ApplyShadow(texture, atlas)
-	if not texture then
-		return
-	end
-	if not atlas or atlas == "" then
-		texture:Hide()
-		return
-	end
-	texture:ClearAllPoints()
-	texture:SetPoint("CENTER")
-	texture:SetAtlas(atlas, TextureKitConstants.UseAtlasSize)
-	texture:Show()
-end
-
-local function BindEdgeOffset(button, frame, nodeID)
-	button.GetEdgeDiameterOffset = nil
-	local live = frame and frame:GetTalentButtonByNodeID(nodeID)
+-- The talent button's own shape for arrows (GetEdgeDiameterOffset), so they stop
+-- just outside its border.
+local function EdgeShape(art, live)
 	if live and live.GetEdgeDiameterOffset then
-		button.GetEdgeDiameterOffset = function(_, angle)
-			return live:GetEdgeDiameterOffset(angle)
+		return live.GetEdgeDiameterOffset
+	end
+	local mixin = TalentButtonArtMixin
+	local sets = mixin.ArtSet
+	if art == sets.Square or art == sets.CapstoneSquare or art == sets.LegacySquare or art == sets.LegionSquare or art == sets.LargeSquare then
+		return mixin.GetSquareEdgeDiameterOffset
+	elseif art == sets.Choice or art == sets.LegionChoice then
+		return mixin.GetChoiceEdgeDiameterOffset
+	end
+	return mixin.GetCircleEdgeDiameterOffset
+end
+
+-- Gives a plan button the talent button's art: the art set the game's state drawing
+-- reads, the shadow, rank font and glow it sets up from it (TalentButtonArtMixin:OnLoad,
+-- ClassTalentButtonBaseMixin:OnLoad), and the live button's icon size and number spot.
+local function SetButtonArt(button, art, live)
+	button.artSet = art
+	if art.shadow then
+		button.Shadow:SetAtlas(art.shadow, TextureKitConstants.UseAtlasSize)
+		button.Shadow:Show()
+	else
+		button.Shadow:Hide()
+	end
+	button.GetEdgeDiameterOffset = EdgeShape(art, live)
+	local icon = live and live.Icon
+	local width, height = 36, 36
+	if icon and icon:GetWidth() > 0 and icon:GetHeight() > 0 then
+		width, height = icon:GetSize()
+	end
+	button.Icon:SetSize(width, height)
+	button.DisabledOverlay:SetSize(width, height)
+
+	local text = button.SpendText
+	if text then
+		text:SetFontObject(art.spendFont)
+		-- Where TalentButtonArtTemplate puts it, unless the live button moved it.
+		local point, relativePoint, x, y = "BOTTOM", "BOTTOM", 11, 4
+		local source = live and live.SpendText
+		if source then
+			local livePoint, _, liveRelativePoint, liveX, liveY = source:GetPoint(1)
+			if livePoint then
+				point, relativePoint, x, y = livePoint, liveRelativePoint, liveX, liveY
+			end
+		end
+		text:ClearAllPoints()
+		text:SetPoint(point, button, relativePoint, x, y)
+	end
+
+	local glow = button.SelectableGlow
+	if glow then
+		glow:SetAtlas(art.glow, TextureKitConstants.IgnoreAtlasSize)
+		-- Capstones pulse brighter (SelectableGlowMaxAlpha in ClassTalentButtonTemplates.xml).
+		local sets = TalentButtonArtMixin.ArtSet
+		local alpha = (art == sets.CapstoneCircle or art == sets.CapstoneSquare) and 0.7 or 0.15
+		glow.FadeIn:SetToAlpha(alpha)
+		glow.FadeOut:SetFromAlpha(alpha)
+	end
+end
+
+-- A plan button has the layers of TalentButtonArtTemplate under the same names, so
+-- the game's own TalentButtonArtMixin:ApplyVisualState draws its state.
+local function CreatePlanButton(frame, board)
+	local button = CreateFrame("Button", nil, board)
+	button:SetSize(frame:GetButtonSize(), frame:GetButtonSize())
+	button:RegisterForClicks("LeftButtonDown", "RightButtonDown")
+	button:SetScript("OnClick", NodeClick)
+	button:SetScript("OnEnter", ShowNodeTooltip)
+	button:SetScript("OnLeave", GameTooltip_Hide)
+	button.Shadow = button:CreateTexture(nil, "BACKGROUND")
+	button.Shadow:SetPoint("CENTER")
+	button.Icon = button:CreateTexture(nil, "BORDER")
+	button.Icon:SetPoint("CENTER")
+	button.DisabledOverlay = button:CreateTexture(nil, "BORDER", nil, 1)
+	button.DisabledOverlay:SetPoint("CENTER")
+	button.DisabledOverlay:SetColorTexture(0, 0, 0, 1)
+	button.DisabledOverlay:Hide()
+	button.StateBorder = button:CreateTexture(nil, "ARTWORK")
+	button.StateBorder:SetPoint("CENTER")
+	-- ApplyVisualState calls these on the button. In Forever, UpdateStateBorder is the
+	-- client's own version, which draws a talent with points green until it is maxed.
+	button.UpdateStateBorder = TalentButtonArtMixin.UpdateStateBorder
+	button.SetBorderAtlas = TalentButtonArtMixin.SetBorderAtlas
+	-- The color blind mark on a talent that can take a point.
+	button.SelectableIcon = button:CreateTexture(nil, "OVERLAY", nil, 2)
+	button.SelectableIcon:SetAtlas("talents-icon-learnableplus", TextureKitConstants.UseAtlasSize)
+	button.SelectableIcon:SetPoint("BOTTOMLEFT", -3, -3)
+	button.SelectableIcon:Hide()
+	-- The talent button's own search mark (TalentButtonArt.xml): the game's template,
+	-- 63 across, centered on the icon's top right, with an 18 wide hover spot for its
+	-- tooltip, which uses the talent tooltip's backdrop. The template pulses the mark
+	-- while it is shown.
+	local searchIcon = CreateFrame("Frame", nil, button, "TalentButtonSearchIconTemplate")
+	searchIcon:SetSize(63, 63)
+	searchIcon:SetPoint("CENTER", button.Icon, "TOPRIGHT")
+	searchIcon.Mouseover:SetSize(18, 18)
+	searchIcon.tooltipBackdropStyle = GAME_TOOLTIP_BACKDROP_STYLE_CLASS_TALENT
+	searchIcon:Hide()
+	button.SearchIcon = searchIcon
+	return button
+end
+
+local function CreateNodeButton(frame, board, nodeID)
+	local button = CreatePlanButton(frame, board)
+	-- The tooltip reads these, and RefreshOpenTooltip finds plan buttons by them.
+	button.calculatorFrame = frame
+	button.calculatorNodeID = nodeID
+	button.SpendText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight", 2)
+	button.SpendText:SetJustifyH("CENTER")
+	-- The game's pulse on a talent that can take a point (SelectableGlow in
+	-- ClassTalentBaseButtonTemplate): the art set's glow, fading in and out, shown
+	-- only while it plays.
+	local glow = button:CreateTexture(nil, "OVERLAY")
+	glow:SetSize(61, 61)
+	glow:SetPoint("CENTER")
+	glow:SetBlendMode("ADD")
+	local pulse = glow:CreateAnimationGroup(nil, "VisibleWhilePlayingAnimGroupTemplate")
+	pulse:SetLooping("REPEAT")
+	pulse:SetToFinalAlpha(true)
+	glow.FadeIn = pulse:CreateAnimation("Alpha")
+	glow.FadeIn:SetFromAlpha(0)
+	glow.FadeIn:SetDuration(1)
+	glow.FadeIn:SetOrder(1)
+	glow.FadeIn:SetSmoothing("OUT")
+	glow.FadeOut = pulse:CreateAnimation("Alpha")
+	glow.FadeOut:SetToAlpha(0)
+	glow.FadeOut:SetDuration(1)
+	glow.FadeOut:SetOrder(2)
+	glow.FadeOut:SetSmoothing("IN")
+	glow.Anim = pulse
+	glow:Hide()
+	button.SelectableGlow = glow
+	button.choices = {}
+	return button
+end
+
+-- The entry a talent shows: the chosen one, or its first.
+local function ShownEntryID(nodeID)
+	local stored = ns.ranks[nodeID]
+	if stored and stored.entryID > 0 then
+		return stored.entryID
+	end
+	return ns.structure[nodeID].entryIDs[1]
+end
+
+-- Shows an entry's icon on a plan button. The entry is read again only when it changes.
+local function SetButtonEntry(frame, button, entryID)
+	if button.entryVisual and button.entryVisual.entryID == entryID then
+		return
+	end
+	button.entryVisual = EntryVisual(frame, entryID)
+	ApplyIcon(button.Icon, button.entryVisual)
+end
+
+local function EnsureChoices(frame, board, button, structure, art, live)
+	local entries = structure.entryIDs
+	if structure.nodeType ~= Enum.TraitNodeType.Selection or #entries < 2 then
+		for _, choice in ipairs(button.choices) do
+			choice:Hide()
 		end
 		return
 	end
-	local mixin = TalentButtonArtMixin
-	local art = ArtSet(frame, nodeID)
-	local sets = mixin.ArtSet
-	if art == sets.Square or art == sets.CapstoneSquare or art == sets.LegacySquare or art == sets.LegionSquare or art == sets.LargeSquare then
-		button.GetEdgeDiameterOffset = mixin.GetSquareEdgeDiameterOffset
-	elseif art == sets.Choice or art == sets.LegionChoice then
-		button.GetEdgeDiameterOffset = mixin.GetChoiceEdgeDiameterOffset
-	else
-		button.GetEdgeDiameterOffset = mixin.GetCircleEdgeDiameterOffset
+	for index, entryID in ipairs(entries) do
+		local choice = button.choices[index]
+		if not choice then
+			choice = CreatePlanButton(frame, board)
+			choice.planNode = button
+			button.choices[index] = choice
+		end
+		choice.entryID = entryID
+		SetButtonArt(choice, art, live)
+		choice.entryVisual = nil
+		SetButtonEntry(frame, choice, entryID)
+		choice:Show()
+	end
+	for index = #entries + 1, #button.choices do
+		button.choices[index]:Hide()
 	end
 end
 
-local function ApplyShade(icon, shade, look)
-	local dimmed = look == "gated" or look == "locked" or look == "disabled"
-	local refund = look == "refund"
-	if icon then
-		icon:SetDesaturated(dimmed)
-		local color = refund and DIM_RED_FONT_COLOR or WHITE_FONT_COLOR
-		icon:SetVertexColor(color:GetRGBA())
+-- The talent button's visual state for a plan talent, in the game's order
+-- (TalentButtonBaseMixin:CalculateVisualState). With an entry, the state of that
+-- choice of a choice talent: a choice not taken on a talent with its point is disabled.
+local function PlanVisualState(nodeID, entryID)
+	local states = TalentButtonUtil.BaseVisualState
+	local ranks = SourceRank(nodeID)
+	if entryID and ranks > 0 and entryID ~= ns.ranks[nodeID].entryID then
+		return states.Disabled
 	end
-	if not shade then
+	if SourceMaxed(nodeID) then
+		return states.Maxed
+	end
+	if CanAddRank(nodeID) then
+		return states.Selectable
+	end
+	if ranks > 0 then
+		return states.Normal
+	end
+	if not GateOpen(nodeID) then
+		return states.Gated
+	end
+	if not EdgesAllow(nodeID) then
+		return states.Locked
+	end
+	return states.Disabled
+end
+
+-- TalentButtonBaseMixin:GetSpendText for the plan: the ranks once the talent has a
+-- point or can take one, and no number on a one-rank talent when the tree hides those.
+local function PlanSpendText(frame, nodeID)
+	local ranks = SourceRank(nodeID)
+	if ranks < 1 and not CanAddRank(nodeID) then
+		return ""
+	end
+	if ranks <= 1 and ns.structure[nodeID].maxRanks == 1 and frame:ShouldHideSingleRankNumbers() then
+		return ""
+	end
+	return tostring(ranks)
+end
+
+local function PaintNode(frame, nodeID)
+	local button = frame.calculatorNodes[nodeID]
+	if not button then
 		return
 	end
-	shade:SetShown(dimmed or refund)
-	if dimmed or refund then
-		shade:SetAlpha(look == "gated" and 0.7 or (refund and 0.3 or 0.25))
+	local state = PlanVisualState(nodeID)
+	SetButtonEntry(frame, button, ShownEntryID(nodeID))
+	TalentButtonUtil.SetSpendText(button, PlanSpendText(frame, nodeID))
+	TalentButtonArtMixin.ApplyVisualState(button, state)
+	-- ClassTalentButtonBaseMixin:UpdateSelectableGlow. A pulse already running goes on.
+	local pulse = button.SelectableGlow.Anim
+	local selectable = state == TalentButtonUtil.BaseVisualState.Selectable
+	if pulse:IsPlaying() ~= selectable then
+		pulse:SetPlaying(selectable)
 	end
-end
-
-local function ButtonSize(frame)
-	local size = frame:GetButtonSize()
-	if type(size) == "number" and size > 0 then
-		return size
-	end
-	local info = frame:GetTreeInfo()
-	if info and type(info.buttonSize) == "number" and info.buttonSize > 0 then
-		return info.buttonSize
-	end
-	return nil
-end
-
-local function LiveButton(frame, nodeID)
-	return frame and frame:GetTalentButtonByNodeID(nodeID)
-end
-
-local function MatchIcon(icon, shade, live)
-	local source = live and live.Icon
-	if not icon or not source then
-		return
-	end
-	local width, height = source:GetSize()
-	if not width or width <= 0 or not height or height <= 0 then
-		return
-	end
-	icon:ClearAllPoints()
-	icon:SetSize(width, height)
-	icon:SetPoint("CENTER")
-	if shade then
-		shade:ClearAllPoints()
-		shade:SetSize(width, height)
-		shade:SetPoint("CENTER")
-	end
-end
-
-local function MatchSpendText(text, live)
-	local source = live and live.SpendText
-	if not text or not source then
-		return
-	end
-	local font, size, flags = source:GetFont()
-	if font and size and size > 0 then
-		text:SetFont(font, size, flags)
-	end
-	local point, _, relativePoint, x, y = source:GetPoint(1)
-	if point then
-		text:ClearAllPoints()
-		text:SetPoint(point, text:GetParent(), relativePoint or point, x or 0, y or 0)
-	end
-	local justify = source:GetJustifyH()
-	if justify then
-		text:SetJustifyH(justify)
+	for _, choice in ipairs(button.choices) do
+		if choice:IsShown() then
+			TalentButtonArtMixin.ApplyVisualState(choice, PlanVisualState(nodeID, choice.entryID))
+		end
 	end
 end
 
@@ -1959,131 +1749,30 @@ local function ApplyPlanSearch(frame)
 	end
 end
 
--- The layers every plan button draws, sized like the talent button it stands for.
-local function CreatePlanButton(frame, board, nodeID)
-	local button = CreateFrame("Button", nil, board)
-	local size = ButtonSize(frame)
-	if size then
-		button:SetSize(size, size)
-	end
-	button:RegisterForClicks("LeftButtonDown", "RightButtonDown")
-	button:SetScript("OnLeave", GameTooltip_Hide)
-	local shadow = button:CreateTexture(nil, "BACKGROUND")
-	shadow:SetPoint("CENTER")
-	shadow:Hide()
-	button.Shadow = shadow
-	local icon = button:CreateTexture(nil, "ARTWORK")
-	icon:SetAllPoints(button)
-	button.icon = icon
-	local shade = button:CreateTexture(nil, "ARTWORK", nil, 1)
-	shade:SetAllPoints(icon)
-	shade:SetColorTexture(0, 0, 0, 1)
-	shade:Hide()
-	button.shade = shade
-	local border = button:CreateTexture(nil, "OVERLAY")
-	border:SetAllPoints(button)
-	button.border = border
-	-- The talent button's own search mark (TalentButtonArt.xml): the game's template,
-	-- 63 across, centered on the icon's top right, with an 18 wide hover spot for its
-	-- tooltip. The template pulses the mark while it is shown.
-	local searchIcon = CreateFrame("Frame", nil, button, "TalentButtonSearchIconTemplate")
-	searchIcon:SetSize(63, 63)
-	searchIcon:SetPoint("CENTER", icon, "TOPRIGHT")
-	searchIcon.Mouseover:SetSize(18, 18)
-	searchIcon:Hide()
-	button.SearchIcon = searchIcon
-	MatchIcon(icon, shade, LiveButton(frame, nodeID))
-	return button
+--------------------------------------------------------------------------------
+-- Arrows
+--------------------------------------------------------------------------------
+
+local function NodePoint(frame, posX, posY)
+	local panX, panY = frame:GetPanOffset()
+	return TalentButtonUtil.TranslateNodePositionsToAnchorPositions(posX, posY, panX, panY)
 end
 
-local function CreateNodeButton(frame, board, nodeID)
-	local button = CreatePlanButton(frame, board, nodeID)
-	-- The tooltip reads these, and RefreshOpenTooltip finds plan buttons by them.
-	button.calculatorFrame = frame
-	button.calculatorNodeID = nodeID
-	button:SetScript("OnClick", function(_, mouseButton)
-		NodeClick(frame, nodeID, mouseButton)
-	end)
-	button:SetScript("OnEnter", ShowNodeTooltip)
-	local text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	text:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -2, 2)
-	text:SetJustifyH("RIGHT")
-	button.rankText = text
-	MatchSpendText(text, LiveButton(frame, nodeID))
-	button.choices = {}
-	return button
-end
-
-local function EnsureChoices(frame, board, button, structure)
-	local selection = structure.nodeType == Enum.TraitNodeType.Selection
-	local entries = structure.entryIDs or {}
-	if not selection or #entries < 2 then
-		for _, choice in ipairs(button.choices) do
-			choice:Hide()
-		end
-		return
-	end
-	local nodeID = button.calculatorNodeID
-	for index, entryID in ipairs(entries) do
-		local choice = button.choices[index]
-		if not choice then
-			choice = CreatePlanButton(frame, board, nodeID)
-			choice.planNode = button
-			choice:SetScript("OnClick", function(self, mouseButton)
-				NodeClick(frame, nodeID, mouseButton, self.entryID)
-			end)
-			choice:SetScript("OnEnter", ShowNodeTooltip)
-			button.choices[index] = choice
-		end
-		choice.entryID = entryID
-		choice.entryVisual = EntryVisual(frame, entryID)
-		ApplyIcon(choice.icon, choice.entryVisual)
-		ApplyBorder(choice.border, BorderAtlas(frame, nodeID, entryID))
-		choice:Show()
-	end
-	for index = #entries + 1, #button.choices do
-		button.choices[index]:Hide()
-	end
-end
-
-local function EnsureBoard(frame)
-	if frame.calculatorBoard then
-		return frame.calculatorBoard
-	end
-	local parent = frame.ButtonsParent or frame
-	local board = CreateFrame("Frame", nil, parent)
-	board:SetAllPoints(parent)
-	board:SetFrameLevel(parent:GetFrameLevel() + 20)
-	frame.calculatorBoard = board
-	frame.calculatorNodes = {}
-	frame.calculatorEdges = {}
-	return board
-end
-
-local function PlaceNode(frame, board, button, structure, shift)
-	local x, y = NodePoint(frame, structure.posX, structure.posY)
-	button:ClearAllPoints()
-	button:SetPoint("CENTER", board, "TOPLEFT", x + (shift or 0), y)
-end
-
-local function MakeEdgeWidgets(parent)
-	local line = parent:CreateLine(nil, "ARTWORK")
-	local arrow = parent:CreateTexture(nil, "OVERLAY")
+-- TalentEdgeArrowTemplate: a 6 thick line whose art repeats along it, under an arrow head.
+local function CreateEdge(board)
+	local line = board:CreateLine(nil, "ARTWORK")
+	line:SetThickness(6)
+	line:SetHorizTile(true)
+	local arrow = board:CreateTexture(nil, "OVERLAY")
 	arrow:Hide()
-	return line, arrow
+	return { line = line, arrow = arrow }
 end
 
-local function ShowsArrow(style)
-	return style == nil or style == Enum.TraitEdgeVisualStyle.Straight
-end
-
+-- TalentEdgeArrowMixin:UpdateState's colors: locked into a gated talent, yellow once
+-- the arrow's talent is maxed, gray before.
 local function ArrowNames(edge)
-	local startLook = NodeLook(edge.fromID)
-	local endLook = NodeLook(edge.targetID)
 	local name = "gray"
-	if startLook == "refund" or (endLook == "refund" and SourceMaxed(edge.fromID)) then
-		name = "red"
-	elseif endLook == "gated" then
+	if PlanVisualState(edge.targetID) == TalentButtonUtil.BaseVisualState.Gated then
 		name = "locked"
 	elseif edge.active then
 		name = "yellow"
@@ -2091,75 +1780,28 @@ local function ArrowNames(edge)
 	return "talents-arrow-line-" .. name, "talents-arrow-head-" .. name
 end
 
--- The target's size on screen: the plan button, or the talent button before the plan button has one.
-local function NodeSpan(button, frame, nodeID)
-	local function span(widget)
-		if not widget then
-			return nil
-		end
-		local width = widget:GetWidth()
-		if type(width) ~= "number" or width <= 0 then
-			return nil
-		end
-		local height = widget:GetHeight()
-		if type(height) ~= "number" or height <= 0 then
-			height = width
-		end
-		return width, height
-	end
-	local width, height = span(button)
-	if not width then
-		width, height = span(LiveButton(frame, nodeID))
-	end
-	if not width then
-		width, height = 40, 40
-	end
-	return width, height
-end
-
--- The button's own shape when BindEdgeOffset gave it one, otherwise a circle.
-local function DiameterOffset(button, angle)
-	if button.GetEdgeDiameterOffset then
-		return button:GetEdgeDiameterOffset(angle)
-	end
-	return TalentButtonUtil.CircleEdgeDiameterOffset
-end
-
 -- TalentEdgeArrowMixin:UpdatePosition stops the line on the arrow head, just outside the target.
 local function PlaceArrow(frame, edge)
-	local line = edge.line
 	local fromButton = edge.fromButton
 	local toButton = edge.toButton
-	if not line or not fromButton or not toButton then
-		return
-	end
 	local fromStructure = ns.structure[edge.fromID]
 	local toStructure = ns.structure[edge.targetID]
-	local angle = 0
-	if fromStructure and toStructure then
-		local x1, y1 = NodePoint(frame, fromStructure.posX, fromStructure.posY)
-		local x2, y2 = NodePoint(frame, toStructure.posX, toStructure.posY)
-		angle = math.atan2(y1 - y2, x1 - x2)
-	end
-	local offset = DiameterOffset(toButton, angle)
-	local width, height = NodeSpan(toButton, frame, edge.targetID)
-	local xOffset = (width / 2) * math.cos(angle) * offset
-	local yOffset = (height / 2) * math.sin(angle) * offset
-	line:SetStartPoint("CENTER", fromButton)
-	line:SetEndPoint("CENTER", toButton, xOffset, yOffset)
-	local arrow = edge.arrow
-	arrow:ClearAllPoints()
-	arrow:SetPoint("CENTER", toButton, xOffset, yOffset)
-	arrow:SetRotation(angle - (math.pi / 2))
+	local x1, y1 = NodePoint(frame, fromStructure.posX, fromStructure.posY)
+	local x2, y2 = NodePoint(frame, toStructure.posX, toStructure.posY)
+	local angle = math.atan2(y1 - y2, x1 - x2)
+	local offset = toButton:GetEdgeDiameterOffset(angle)
+	local xOffset = (toButton:GetWidth() / 2) * math.cos(angle) * offset
+	local yOffset = (toButton:GetHeight() / 2) * math.sin(angle) * offset
+	edge.line:SetStartPoint("CENTER", fromButton)
+	edge.line:SetEndPoint("CENTER", toButton, xOffset, yOffset)
+	edge.arrow:ClearAllPoints()
+	edge.arrow:SetPoint("CENTER", toButton, xOffset, yOffset)
+	edge.arrow:SetRotation(angle - (math.pi / 2))
 end
 
 local function PaintEdge(frame, edge)
-	local ranksLink = edge.edgeType == REQUIRED_EDGE or edge.edgeType == SUFFICIENT_EDGE
-	if ranksLink then
-		edge.active = SourceMaxed(edge.fromID) and true or false
-	else
-		edge.active = nil
-	end
+	local rankLink = edge.edgeType == REQUIRED_EDGE or edge.edgeType == SUFFICIENT_EDGE
+	edge.active = rankLink and SourceMaxed(edge.fromID)
 	local show = ShowsArrow(edge.visualStyle)
 	edge.line:SetShown(show)
 	edge.arrow:SetShown(show)
@@ -2167,81 +1809,150 @@ local function PaintEdge(frame, edge)
 		return
 	end
 	local lineAtlas, headAtlas = ArrowNames(edge)
-	edge.line:SetThickness(6)
-	-- The Line API does not list SetHorizTile. Blizzard's arrows repeat through hWrapMode in XML.
-	if edge.line.SetHorizTile then
-		edge.line:SetHorizTile(true)
-	end
-	edge.line:SetVertexColor(1, 1, 1, 1)
 	edge.line:SetAtlas(lineAtlas, TextureKitConstants.IgnoreAtlasSize)
-	edge.arrow:SetVertexColor(1, 1, 1, 1)
 	edge.arrow:SetAtlas(headAtlas, TextureKitConstants.UseAtlasSize)
 	PlaceArrow(frame, edge)
 end
 
 local function BuildEdges(frame, board)
-	local wanted = {}
+	local edges = frame.calculatorEdges
+	local count = 0
 	for nodeID, structure in pairs(ns.structure) do
 		local from = frame.calculatorNodes[nodeID]
-		for _, edge in ipairs(structure.edges or {}) do
-			local to = edge.target and frame.calculatorNodes[edge.target]
-			if from and to then
-				wanted[#wanted + 1] = {
-					fromID = nodeID,
-					targetID = edge.target,
-					edgeType = edge.edgeType,
-					visualStyle = edge.visualStyle,
-					fromButton = from,
-					toButton = to,
-				}
+		for _, info in ipairs(structure.edges) do
+			local to = info.target and frame.calculatorNodes[info.target]
+			if from and to and from:IsShown() and to:IsShown() then
+				count = count + 1
+				local edge = edges[count]
+				if not edge then
+					edge = CreateEdge(board)
+					edges[count] = edge
+				end
+				edge.fromID = nodeID
+				edge.targetID = info.target
+				edge.edgeType = info.edgeType
+				edge.visualStyle = info.visualStyle
+				edge.fromButton = from
+				edge.toButton = to
+				PaintEdge(frame, edge)
 			end
 		end
 	end
-	local lines = frame.calculatorEdges
-	for index, info in ipairs(wanted) do
-		local record = lines[index]
-		if not record then
-			local line, arrow = MakeEdgeWidgets(board)
-			record = { line = line, arrow = arrow }
-			lines[index] = record
+	for index = count + 1, #edges do
+		edges[index].line:Hide()
+		edges[index].arrow:Hide()
+	end
+	frame.calculatorEdgeCount = count
+end
+
+local function RefreshChangedEdges(frame, nodeIDs)
+	for index = 1, frame.calculatorEdgeCount do
+		local edge = frame.calculatorEdges[index]
+		if nodeIDs[edge.fromID] or nodeIDs[edge.targetID] then
+			PaintEdge(frame, edge)
 		end
-		record.fromID = info.fromID
-		record.targetID = info.targetID
-		record.edgeType = info.edgeType
-		record.visualStyle = info.visualStyle
-		record.fromButton = info.fromButton
-		record.toButton = info.toButton
-		record.line:Show()
-		PaintEdge(frame, record)
 	end
-	for index = #wanted + 1, #lines do
-		lines[index].line:Hide()
-		lines[index].arrow:Hide()
-		lines[index] = nil
+end
+
+--------------------------------------------------------------------------------
+-- Gates
+--------------------------------------------------------------------------------
+
+-- The game's gates (TalentFrameGateTemplate, anchored by the talent window's own
+-- AnchorGate): a lock with the points the plan still needs, on the first locked row
+-- of each tree, as the game shows one gate per tree. The tree's gate list says
+-- where gates go. Gates sit below the talents, as the game draws them.
+local function BuildGates(frame)
+	local nodes = frame.calculatorNodes
+	local board = frame.calculatorBoard
+	frame.calculatorGates = frame.calculatorGates or {}
+	-- The first locked gate of each tree, keyed by its anchor talent.
+	local firstLocked = {}
+	for _, gateInfo in ipairs(TreeGates(frame, PlanConfigID(frame)) or {}) do
+		local anchorID = gateInfo.topLeftNodeID
+		local left = PointsLeft(anchorID)
+		local button = nodes[anchorID]
+		if left and left > 0 and button and button:IsShown() then
+			local treeAnchor
+			for otherID in pairs(firstLocked) do
+				if SameTree(otherID, anchorID) then
+					treeAnchor = otherID
+					break
+				end
+			end
+			if not treeAnchor then
+				firstLocked[anchorID] = left
+			elseif ns.structure[anchorID].posY < ns.structure[treeAnchor].posY then
+				firstLocked[treeAnchor] = nil
+				firstLocked[anchorID] = left
+			end
+		end
 	end
+	local count = 0
+	for anchorID, left in pairs(firstLocked) do
+		count = count + 1
+		local gate = frame.calculatorGates[count]
+		if not gate then
+			gate = CreateFrame("Frame", nil, board, "TalentFrameGateTemplate")
+			gate:SetFrameLevel(board:GetFrameLevel())
+			gate:EnableMouseMotion(true)
+			gate:SetScript("OnEnter", ShowGateTooltip)
+			gate:SetScript("OnLeave", GameTooltip_Hide)
+			frame.calculatorGates[count] = gate
+		end
+		gate.pointsNeeded = left
+		gate.GateText:SetText(left)
+		gate.GateText:Show()
+		gate:ClearAllPoints()
+		frame:AnchorGate(gate, nodes[anchorID])
+		gate:Show()
+	end
+	for index = count + 1, #frame.calculatorGates do
+		frame.calculatorGates[index]:Hide()
+	end
+end
+
+--------------------------------------------------------------------------------
+-- The board
+--------------------------------------------------------------------------------
+
+local function EnsureBoard(frame)
+	if frame.calculatorBoard then
+		return frame.calculatorBoard
+	end
+	local parent = frame.ButtonsParent
+	local board = CreateFrame("Frame", nil, parent)
+	board:SetAllPoints(parent)
+	board:SetFrameLevel(parent:GetFrameLevel() + 20)
+	frame.calculatorBoard = board
+	frame.calculatorNodes = {}
+	frame.calculatorEdges = {}
+	frame.calculatorEdgeCount = 0
+	return board
 end
 
 local function BuildBoard(frame)
 	local board = EnsureBoard(frame)
-	local seen = {}
+	local size = frame:GetButtonSize()
+	local shown = {}
 	for nodeID, structure in pairs(ns.structure) do
-		if structure.maxRanks and structure.maxRanks > 0 then
-			seen[nodeID] = true
+		if structure.maxRanks > 0 then
+			shown[nodeID] = true
 			local button = frame.calculatorNodes[nodeID]
 			if not button then
 				button = CreateNodeButton(frame, board, nodeID)
 				frame.calculatorNodes[nodeID] = button
 			end
-			local stored = ns.ranks[nodeID]
-			local selected = stored and stored.entryID or 0
-			local shownEntry = selected > 0 and selected or (structure.entryIDs and structure.entryIDs[1])
-			button.entryVisual = EntryVisual(frame, shownEntry)
-			ApplyIcon(button.icon, button.entryVisual)
-			ApplyBorder(button.border, BorderAtlas(frame, nodeID))
-			PlaceNode(frame, board, button, structure, 0)
-			BindEdgeOffset(button, frame, nodeID)
-			EnsureChoices(frame, board, button, structure)
-			local size = ButtonSize(frame) or 36
+			local live = frame:GetTalentButtonByNodeID(nodeID)
+			local art = ArtSet(frame, nodeID)
+			SetButtonArt(button, art, live)
+			local x, y = NodePoint(frame, structure.posX, structure.posY)
+			button:ClearAllPoints()
+			button:SetPoint("CENTER", board, "TOPLEFT", x, y)
+			-- Spell data may have loaded since the last time, so the icon is read again.
+			button.entryVisual = nil
+			SetButtonEntry(frame, button, ShownEntryID(nodeID))
+			EnsureChoices(frame, board, button, structure, art, live)
 			for index, choice in ipairs(button.choices) do
 				if choice:IsShown() then
 					choice:ClearAllPoints()
@@ -2252,7 +1963,7 @@ local function BuildBoard(frame)
 		end
 	end
 	for nodeID, button in pairs(frame.calculatorNodes) do
-		if not seen[nodeID] then
+		if not shown[nodeID] then
 			button:Hide()
 		end
 	end
@@ -2260,184 +1971,157 @@ local function BuildBoard(frame)
 	board:Show()
 end
 
--- The talent button's visual state for each look. It picks the rank number's color.
-local LOOK_STATE = {
-	refund = "RefundInvalid",
-	gated = "Gated",
-	locked = "Locked",
-	selectable = "Selectable",
-	maxed = "Maxed",
-	normal = "Normal",
-	disabled = "Disabled",
-}
+--------------------------------------------------------------------------------
+-- The points row and tree headers
+--------------------------------------------------------------------------------
 
-local function PaintNode(frame, nodeID)
-	local button = frame.calculatorNodes and frame.calculatorNodes[nodeID]
-	if not button then
-		return
+local function LevelLabel(frame)
+	local display = frame.ClassCurrencyDisplay
+	if not display.calculatorLevelText then
+		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
+		text:SetJustifyH("RIGHT")
+		text:SetPoint("RIGHT", display.UnspentLabel, "LEFT", -20, 0)
+		display.calculatorLevelText = text
 	end
-	local art = ArtSet(frame, nodeID)
-	BindEdgeOffset(button, frame, nodeID)
-	ApplyShadow(button.Shadow, art and art.shadow)
-	local structure = ns.structure[nodeID]
-	local storedRank = ns.ranks[nodeID]
-	local selectedEntry = storedRank and storedRank.entryID or 0
-	if selectedEntry <= 0 and structure and structure.entryIDs then
-		selectedEntry = structure.entryIDs[1] or 0
+	return display.calculatorLevelText
+end
+
+-- The addon's version on the left end of the points row, mirroring the row's
+-- inset from the right. The row sits 6 below the tree area's top, centered on its tallest part.
+local function VersionLabel(frame)
+	local display = frame.ClassCurrencyDisplay
+	if not display.calculatorVersionText then
+		local text = display:CreateFontString(nil, "ARTWORK", "SystemFont_Shadow_Med1")
+		text:SetJustifyH("LEFT")
+		text:SetText("v" .. VERSION)
+		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
+		text:SetPoint("LEFT", frame.BackgroundBorder, "TOPLEFT", 20, -6 - rowHeight / 2)
+		display.calculatorVersionText = text
 	end
-	if selectedEntry > 0 then
-		button.entryVisual = EntryVisual(frame, selectedEntry)
-		ApplyIcon(button.icon, button.entryVisual)
+	return display.calculatorVersionText
+end
+
+-- The addon's name in the game's gold title font, centered on the same points row.
+local function TitleLabel(frame)
+	local display = frame.ClassCurrencyDisplay
+	if not display.calculatorTitleText then
+		local text = display:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+		text:SetJustifyH("CENTER")
+		text:SetText(ADDON_TITLE)
+		local rowHeight = math.max(display.Border:GetHeight(), display.CurrentAmountContainer:GetHeight())
+		text:SetPoint("CENTER", frame.BackgroundBorder, "TOP", 0, -6 - rowHeight / 2)
+		display.calculatorTitleText = text
 	end
-	if button.rankText then
-		MatchSpendText(button.rankText, LiveButton(frame, nodeID))
-		MatchIcon(button.icon, button.shade, LiveButton(frame, nodeID))
-		if not button.rankText:GetFont() then
-			button.rankText:SetFontObject(GameFontHighlight)
+	return display.calculatorTitleText
+end
+
+-- The plan's unspent points, over the game's own number in the same font.
+local function PlanAmountText(frame)
+	local display = frame.ClassCurrencyDisplay
+	if not display.calculatorAmountText then
+		local container = display.CurrentAmountContainer
+		local text = container:CreateFontString(nil, "OVERLAY", "Game32Font_Shadow2")
+		text:SetPoint("CENTER", container, "CENTER", 0, 0)
+		text:SetJustifyH("CENTER")
+		text:SetJustifyV("MIDDLE")
+		display.calculatorAmountText = text
+	end
+	return display.calculatorAmountText
+end
+
+-- A tree's planned points, over the header's own number in the same font.
+local function HeaderSpentText(header)
+	if not header.calculatorSpentText then
+		local text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		text:SetPoint("CENTER", header.Text, "CENTER", 0, 0)
+		text:SetJustifyH("CENTER")
+		text:SetJustifyV("MIDDLE")
+		header.calculatorSpentText = text
+	end
+	return header.calculatorSpentText
+end
+
+-- Puts the character's own numbers back on the points row and the tree headers.
+local function ShowCharacterTalentNumbers(frame)
+	local display = frame.ClassCurrencyDisplay
+	if display.calculatorAmountText then
+		display.calculatorAmountText:Hide()
+	end
+	display.CurrentAmountContainer.CurrencyAmount:Show()
+	for _, header in ipairs(frame.treeHeaders or {}) do
+		if header.calculatorSpentText then
+			header.calculatorSpentText:Hide()
 		end
-		button.rankText:SetText(PlanSpendText(frame, nodeID))
-		local states = TalentButtonUtil.BaseVisualState
-		local color = TalentButtonUtil.GetColorForBaseVisualState(states[LOOK_STATE[NodeLook(nodeID)]])
-		button.rankText:SetTextColor(color:GetRGB())
-	end
-	local look = NodeLook(nodeID)
-	ApplyBorder(button.border, BorderAtlas(frame, nodeID))
-	ApplyShade(button.icon, button.shade, look)
-	for _, choice in ipairs(button.choices or {}) do
-		local choiceLook = NodeLook(nodeID, choice.entryID)
-		ApplyBorder(choice.border, BorderAtlas(frame, nodeID, choice.entryID))
-		ApplyShadow(choice.Shadow, art and art.shadow)
-		ApplyShade(choice.icon, choice.shade, choiceLook)
+		header.Text:Show()
 	end
 end
 
-local function RefreshOpenTooltip()
-	if not GameTooltip:IsShown() then
-		return
-	end
-	local owner = GameTooltip:GetOwner()
-	if owner and owner.calculatorNodeID then
-		local script = owner:GetScript("OnEnter")
-		if script then
-			script(owner)
-		end
-	end
+-- Save is on while the plan differs from the saved one, Load Saved while a saved
+-- plan differs from the one on screen, and Clear while the plan has points.
+local function UpdatePlanButtons(frame)
+	local matches = PlanMatchesSaved()
+	frame.calculatorSaveButton:SetEnabled(not matches)
+	frame.calculatorLoadButton:SetEnabled(HasSavedPlan() and not matches)
+	frame.calculatorClearButton:SetEnabled(next(ns.ranks) ~= nil)
 end
 
-local function RefreshChangedEdges(frame, nodeIDs)
-	for _, edge in ipairs(frame.calculatorEdges or {}) do
-		if nodeIDs[edge.fromID] or nodeIDs[edge.targetID] then
-			PaintEdge(frame, edge)
-		end
-	end
-end
-
-local BuildGates
-
-local RememberCurrentPlan
-
-local function ApplyLocalChange(frame, originID, poolChanged)
-	local affected = {}
-	local origin = ns.structure[originID]
-	MarkOutgoing(affected, originID)
-	if origin then
-		for nodeID, other in pairs(ns.structure) do
-			if other.requiredSpent and other.requiredSpent > 0 and SameTree(originID, nodeID) then
-				affected[nodeID] = true
-			end
-		end
-	end
-	-- The last point, or the first point freed, changes what every tree can buy.
-	if poolChanged then
-		for nodeID in pairs(ns.structure) do
-			if not SourceMaxed(nodeID) and EdgesAllow(nodeID) and GateOpen(nodeID) then
-				affected[nodeID] = true
-			end
-		end
-	end
-	Prune(affected)
-	for nodeID in pairs(affected) do
-		PaintNode(frame, nodeID)
-	end
-	RefreshChangedEdges(frame, affected)
-	PaintSpent(frame)
-	BuildGates(frame)
-	RefreshOpenTooltip()
-	if RememberCurrentPlan then
-		RememberCurrentPlan()
-	end
-end
-
--- TalentFrameBaseMixin:SetDisabledOverlayShown only shows or hides this overlay.
-local function HideLockedOverlay(frame)
-	frame.DisabledOverlay:Hide()
-end
-
--- The number on a gate stays while any talent that gate locks still needs those points.
-local function GateStillLocks(anchorID, amount)
-	local anchor = anchorID and ns.structure[anchorID]
-	if not anchor or not amount or amount <= 0 then
-		return false
-	end
-	for nodeID, structure in pairs(ns.structure) do
-		local required = structure.requiredSpent or 0
-		if required >= amount and SameTree(anchorID, nodeID) and not IsAbove(structure, anchor) and SpentAbove(nodeID) < amount then
-			return true
-		end
-	end
-	return false
-end
-
-function BuildGates(frame)
-	local nodes = frame.calculatorNodes
-	if not nodes then
-		return
-	end
-	frame.calculatorGates = frame.calculatorGates or {}
-	local gates = TreeGates(frame, PlanConfigID(frame)) or {}
-	local used = {}
-	for index, gateInfo in ipairs(gates) do
-		local button = nodes[gateInfo.topLeftNodeID]
-		if button then
-			used[index] = true
-			local gate = frame.calculatorGates[index]
-			if not gate then
-				gate = CreateFrame("Frame", nil, button)
-				gate:EnableMouse(true)
-				gate:SetScript("OnEnter", ShowGateTooltip)
-				gate:SetScript("OnLeave", GameTooltip_Hide)
-				local text = gate:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-				text:SetPoint("RIGHT", gate, "RIGHT", 0, 0)
-				gate.GateText = text
-				frame.calculatorGates[index] = gate
-			end
-			-- A reused marker follows its new node, so it is not hidden along with the old one.
-			if gate:GetParent() ~= button then
-				gate:SetParent(button)
-			end
-			gate.calculatorFrame = frame
-			gate.calculatorNodeID = gateInfo.topLeftNodeID
-			gate:ClearAllPoints()
-			frame:AnchorGate(gate, button)
-			local anchor = ns.structure[gateInfo.topLeftNodeID]
-			local fullAmount = anchor and anchor.requiredSpent
-			if gate.GateText and fullAmount and fullAmount > 0 then
-				if gate.GateText.GetFont and not gate.GateText:GetFont() and gate.GateText.SetFontObject and GameFontHighlight then
-					gate.GateText:SetFontObject(GameFontHighlight)
+-- A tree header's planned points: the same tree the row gates count each talent in.
+local function HeaderSpent(groupID)
+	local spent = 0
+	for nodeID, stored in pairs(ns.ranks) do
+		local structure = ns.structure[nodeID]
+		local knownTree = ns.treeOf and ns.treeOf[nodeID]
+		local counts = false
+		if knownTree then
+			counts = knownTree == groupID
+		elseif structure then
+			for _, headerGroup in ipairs(structure.groupIDs) do
+				local mapped = ns.groupTree and ns.groupTree[headerGroup]
+				if headerGroup == groupID or mapped == groupID then
+					counts = true
+					break
 				end
-				gate.GateText:SetText(fullAmount)
-				gate.GateText:Show()
 			end
-			gate:SetShown(GateStillLocks(gateInfo.topLeftNodeID, fullAmount))
-			button.gate = gate
+			if not counts and ns.currencyGroupsOf then
+				counts = ListHas(ns.currencyGroupsOf[nodeID] or {}, groupID)
+			end
+		end
+		if counts then
+			spent = spent + stored.ranks
 		end
 	end
-	for index, gate in pairs(frame.calculatorGates) do
-		if not used[index] then
-			gate:Hide()
+	return spent
+end
+
+local function PaintSpent(frame)
+	local display = frame.ClassCurrencyDisplay
+	local unspent = math.max(0, Unspent())
+	local amount = PlanAmountText(frame)
+	amount:SetText(unspent)
+	-- ClassTalentCurrencyDisplayMixin:SetAmount's colors.
+	amount:SetTextColor((unspent > 0 and GREEN_FONT_COLOR or GRAY_FONT_COLOR):GetRGBA())
+	amount:Show()
+	display.CurrentAmountContainer.CurrencyAmount:Hide()
+	local levelText = LevelLabel(frame)
+	levelText:SetText("Level required: " .. LevelRequiredText(TotalSpent()))
+	levelText:Show()
+	VersionLabel(frame):Show()
+	TitleLabel(frame):Show()
+	UpdatePlanButtons(frame)
+	for _, header in ipairs(frame.treeHeaders or {}) do
+		local groupID = header.displayInfo and header.displayInfo.groupID
+		if groupID then
+			local text = HeaderSpentText(header)
+			text:SetText(HeaderSpent(groupID))
+			text:Show()
+			header.Text:Hide()
 		end
 	end
 end
+
+--------------------------------------------------------------------------------
+-- Chat about plans
+--------------------------------------------------------------------------------
 
 local FIT_REASONS = {
 	tree = "no longer in the tree",
@@ -2447,12 +2131,8 @@ local FIT_REASONS = {
 }
 local MAX_LISTED_CHANGES = 3
 
--- The talent's name for the chosen entry, or its first entry. A talent removed
--- from the game has no name left to read.
-local function TalentName(frame, nodeID, entryID, unknown)
-	local structure = ns.structure[nodeID]
-	local shownID = entryID and entryID > 0 and entryID or (structure and structure.entryIDs[1])
-	return shownID and EntryVisual(frame, shownID).name or unknown
+local function Reasons(texts)
+	return GRAY_FONT_COLOR:WrapTextInColorCode("(" .. table.concat(texts, ", ") .. ")")
 end
 
 local function DescribeChange(frame, change)
@@ -2460,20 +2140,21 @@ local function DescribeChange(frame, change)
 	for index, reason in ipairs(change.reasons) do
 		reasonTexts[index] = FIT_REASONS[reason]
 	end
-	local reason = table.concat(reasonTexts, ", ")
-	local newName = change.newEntryID and TalentName(frame, change.nodeID, change.newEntryID, "a talent")
+	local newName = change.newEntryID and TalentText(frame, change.nodeID, change.newEntryID, "a talent")
 	if change.newEntryID and change.to == change.from then
-		return newName .. " replaces " .. TalentName(frame, change.nodeID, change.entryID, "a removed choice") .. " (choice no longer exists)"
+		local oldName = TalentText(frame, change.nodeID, change.entryID, "a removed choice")
+		return newName .. " replaces " .. oldName .. " " .. Reasons({ "choice no longer exists" })
 	end
 	-- A replaced choice that also lost points is named by its new choice.
-	local name = newName or TalentName(frame, change.nodeID, change.entryID, "a talent")
+	local name = newName or TalentText(frame, change.nodeID, change.entryID, "a talent")
 	if change.to == 0 then
-		return name .. " removed (" .. reason .. ")"
+		return name .. " removed " .. Reasons(reasonTexts)
 	end
-	return string.format("%s from %d to %d ranks (%s)", name, change.from, change.to, reason)
+	return string.format("%s from %d to %d ranks %s", name, change.from, change.to, Reasons(reasonTexts))
 end
 
--- One chat line when fitting changed the plan on screen, naming the first few talents.
+-- One chat line when fitting changed the plan on screen, naming the first few talents
+-- as links.
 local function ReportPlanFit(frame, changes)
 	if not changes[1] then
 		return
@@ -2489,6 +2170,21 @@ local function ReportPlanFit(frame, changes)
 	Say(SlotText(ns.slot or 1) .. " plan changed to fit the current talents: " .. text .. ". Press Save to keep it.")
 end
 
+--------------------------------------------------------------------------------
+-- Showing and changing the plan
+--------------------------------------------------------------------------------
+
+-- The game's own controls for the character's talents: Apply, Undo, Reset, the spec
+-- controls and the locked-spec overlay. The game shows them again as it updates.
+local function HideGameControls(frame)
+	frame.ApplyButton:Hide()
+	frame.ApplyButton:Disable()
+	frame.UndoButton:Hide()
+	frame.ResetButton:Hide()
+	frame.ActiveSpec:Hide()
+	frame.DisabledOverlay:Hide()
+end
+
 local function ShowPlan(frame)
 	if not next(ns.structure) then
 		RememberFrame(frame)
@@ -2497,23 +2193,51 @@ local function ShowPlan(frame)
 	if next(ns.structure) then
 		ReportPlanFit(frame, FitPlanToTree())
 	else
-		Say("couldn't read the talent tree. Close and reopen the talent window.")
+		SayFailed("Couldn't read the talent tree. Close and reopen the talent window.")
 	end
 	HideClientTree(frame)
+	HideGameControls(frame)
 	BuildBoard(frame)
 	ApplyPlanSearch(frame)
-	HideLockedOverlay(frame)
 	for nodeID in pairs(ns.structure) do
 		PaintNode(frame, nodeID)
 	end
 	PaintSpent(frame)
 	BuildGates(frame)
-	HideLockedOverlay(frame)
 	RefreshOpenTooltip()
 end
 
-function ChangeRank(frame, nodeID, delta)
-	if not ShowingCalculator(frame) or not nodeID or delta == 0 then
+-- Repaints what a change to one talent can affect: its arrows' talents, the rows of
+-- its tree, and when the last point was spent or the first one freed, every talent
+-- that could take one.
+local function ApplyLocalChange(frame, originID, poolChanged)
+	local affected = {}
+	MarkOutgoing(affected, originID)
+	for nodeID, other in pairs(ns.structure) do
+		if other.requiredSpent and other.requiredSpent > 0 and SameTree(originID, nodeID) then
+			affected[nodeID] = true
+		end
+	end
+	if poolChanged then
+		for nodeID in pairs(ns.structure) do
+			if not SourceMaxed(nodeID) and EdgesAllow(nodeID) and GateOpen(nodeID) then
+				affected[nodeID] = true
+			end
+		end
+	end
+	Prune(affected)
+	for nodeID in pairs(affected) do
+		PaintNode(frame, nodeID)
+	end
+	RefreshChangedEdges(frame, affected)
+	PaintSpent(frame)
+	BuildGates(frame)
+	RefreshOpenTooltip()
+	RememberCurrentPlan()
+end
+
+local function ChangeRank(frame, nodeID, delta)
+	if not ShowingCalculator(frame) then
 		return
 	end
 	if not ns.structure[nodeID] then
@@ -2523,24 +2247,17 @@ function ChangeRank(frame, nodeID, delta)
 	if not structure then
 		return
 	end
-
-	local stored = ns.ranks[nodeID]
-	local current = stored and stored.ranks or 0
-	if delta > 0 then
-		if not CanAddRank(nodeID) or not SelectionStaysLegal(nodeID, current + delta) then
-			return
-		end
-	elseif current <= 0 or not SelectionStaysLegal(nodeID, current + delta) then
+	if delta > 0 and not CanAddPoint(nodeID) or delta < 0 and not CanRemovePoint(nodeID) then
 		return
 	end
-
+	local stored = ns.ranks[nodeID]
 	local unspentBefore = Unspent()
-	local nextRank = current + delta
+	local nextRank = SourceRank(nodeID) + delta
 	if nextRank <= 0 then
 		ns.ranks[nodeID] = nil
 	else
 		local entryID = stored and stored.entryID or 0
-		if entryID <= 0 and structure.entryIDs then
+		if entryID <= 0 then
 			entryID = structure.entryIDs[1] or 0
 		end
 		ns.ranks[nodeID] = {
@@ -2551,185 +2268,221 @@ function ChangeRank(frame, nodeID, delta)
 	ApplyLocalChange(frame, nodeID, (unspentBefore == 0) ~= (Unspent() == 0))
 end
 
-function ChooseEntry(frame, nodeID, entryID)
-	if not ShowingCalculator(frame) or not nodeID then
+-- Picks one choice of a choice talent. A first pick spends a point, so it passes the
+-- same checks as a click; switching choices keeps the point.
+local function ChooseEntry(frame, nodeID, entryID)
+	if not ShowingCalculator(frame) then
 		return
 	end
 	if not ns.structure[nodeID] then
 		RememberFrame(frame)
 	end
-	-- A first pick spends a point, so it passes the same checks as a normal click.
-	if not ns.ranks[nodeID] and (not CanAddRank(nodeID) or not SelectionStaysLegal(nodeID, 1)) then
+	local structure = ns.structure[nodeID]
+	if not structure then
+		return
+	end
+	local stored = ns.ranks[nodeID]
+	if not stored and not CanAddPoint(nodeID) then
 		return
 	end
 	local unspentBefore = Unspent()
-	local stored = ns.ranks[nodeID]
-	local structure = ns.structure[nodeID]
 	local chosen = entryID or (stored and stored.entryID) or 0
-	if chosen <= 0 and structure and structure.entryIDs then
+	if chosen <= 0 then
 		chosen = structure.entryIDs[1] or 0
 	end
-	local nextRanks = stored and stored.ranks or 1
-	if nextRanks < 1 then
-		nextRanks = 1
-	end
 	ns.ranks[nodeID] = {
-		ranks = nextRanks,
+		ranks = stored and stored.ranks or 1,
 		entryID = chosen,
 	}
 	ApplyLocalChange(frame, nodeID, (unspentBefore == 0) ~= (Unspent() == 0))
 end
 
-local HideRealActions
-local EnsureWorkingCopy
-
-local function ClientText(globalName, fallback)
-	local value = _G[globalName]
-	if type(value) == "string" and value ~= "" then
-		return value
+-- A plan button's click, as on the game's talent buttons: a right click takes a point
+-- off, a shift-click puts the talent's link in chat, and a click adds a point or picks
+-- a choice.
+function NodeClick(button, mouseButton)
+	local nodeButton = button.planNode or button
+	local frame = nodeButton.calculatorFrame
+	local nodeID = nodeButton.calculatorNodeID
+	if mouseButton == "RightButton" then
+		ChangeRank(frame, nodeID, -1)
+		return
 	end
-	return fallback
+	if IsModifiedClick("CHATLINK") then
+		local spellID = button.entryVisual and button.entryVisual.spellID
+		local link = spellID and C_Spell.GetSpellLink(spellID)
+		if link then
+			ChatFrameUtil.InsertLink(link)
+		end
+		return
+	end
+	local structure = ns.structure[nodeID]
+	if button.entryID or (structure and structure.nodeType == Enum.TraitNodeType.Selection) then
+		ChooseEntry(frame, nodeID, button.entryID)
+		return
+	end
+	ChangeRank(frame, nodeID, 1)
 end
 
-local function UpdateSlotDropdown(frame)
-	local dropdown = frame and frame.calculatorSlotDropdown
-	if not dropdown then
+--------------------------------------------------------------------------------
+-- Save, Load Saved, Clear and the slot menu
+--------------------------------------------------------------------------------
+
+local function SaveBuild(frame)
+	local build = SaveSlot(ns.slot or 1, true)
+	-- Plans are saved per character, and the name can be missing right after login.
+	if not build then
+		SayFailed("Couldn't save: your character isn't fully loaded yet. Try again in a moment.")
 		return
 	end
-	-- Rebuilding the menu refreshes the selected slot shown on the button.
-	if dropdown.menuGenerator then
-		pcall(dropdown.GenerateMenu, dropdown)
+	for key in pairs(build) do
+		build[key] = nil
 	end
+	local nodes = {}
+	for nodeID, stored in pairs(ns.ranks) do
+		nodes[#nodes + 1] = {
+			nodeID = nodeID,
+			ranks = stored.ranks,
+			entryID = stored.entryID,
+		}
+	end
+	build.nodes = nodes
+	RememberCurrentPlan()
+	UpdatePlanButtons(frame)
+	Say(string.format("%s plan saved (%d/%d points).", SlotText(ns.slot or 1), TotalSpent(), PLAN_BUDGET))
 end
 
-local function SelectSlot(frame, group)
-	if group ~= 1 and group ~= 2 then
+local function ClearBuild(frame)
+	ClearRankTable()
+	ns.loadedSlot = ns.slot or 1
+	if ShowingCalculator(frame) then
+		ShowPlan(frame)
+	end
+	RememberCurrentPlan()
+	Say(SlotText(ns.slot or 1) .. " plan cleared. Your saved plan is unchanged until you press Save.")
+end
+
+local function LoadSavedPlan(frame)
+	local slot = ns.slot or 1
+	if not HasSavedPlan() then
 		return
 	end
-	if ns.slot == group and ns.loadedSlot == group then
-		UpdateSlotDropdown(frame)
+	local hadChanges = not PlanMatchesSaved()
+	LoadSavedRanks(slot)
+	ns.loadedSlot = slot
+	-- Said before ShowPlan, so a line about fitting the plan to the tree comes after it.
+	local message = string.format("Saved %s plan loaded (%d/%d points).", SlotText(slot), TotalSpent(), PLAN_BUDGET)
+	if hadChanges then
+		message = message .. " Unsaved changes were discarded."
+	end
+	Say(message)
+	if ShowingCalculator(frame) then
+		ShowPlan(frame)
+	end
+	RememberCurrentPlan()
+end
+
+local function SelectSlot(frame, slot)
+	if ns.slot == slot and ns.loadedSlot == slot then
 		return
 	end
-	ns.slot = group
+	ns.slot = slot
 	EnsureWorkingCopy()
 	if ShowingCalculator(frame) then
 		ShowPlan(frame)
-		HideRealActions(frame)
-	else
-		UpdateSlotDropdown(frame)
 	end
 end
 
-function HideRealActions(frame)
-	frame.ApplyButton:Hide()
-	frame.ApplyButton:Disable()
-	frame.UndoButton:Hide()
-	frame.ResetButton:Hide()
-	frame.ActiveSpec:Hide()
-	HideLockedOverlay(frame)
-	if frame.calculatorSaveButton then
-		frame.calculatorSaveButton:SetText(ClientText("SAVE", "Save"))
-		frame.calculatorClearButton:SetText(ClientText("CLEAR", "Clear"))
-		frame.calculatorSaveButton:Show()
-		if frame.calculatorLoadButton then
-			frame.calculatorLoadButton:Show()
+local function PlanButton(frame, text, tooltipText, onClick)
+	local button = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
+	button:SetSize(120, 22)
+	button:SetText(text)
+	button:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + 5)
+	button:SetScript("OnClick", function()
+		onClick(frame)
+	end)
+	button:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip_SetTitle(GameTooltip, text)
+		GameTooltip_AddNormalLine(GameTooltip, tooltipText)
+		GameTooltip:Show()
+	end)
+	button:SetScript("OnLeave", GameTooltip_Hide)
+	button:Disable()
+	button:Hide()
+	return button
+end
+
+-- Save, Load Saved and Clear take the Apply button's place, and the Primary/Secondary
+-- menu sits above them.
+local function CreatePlanControls(frame)
+	local load = PlanButton(frame, "Load Saved", "Puts your saved plan back on screen. Unsaved changes are lost.", LoadSavedPlan)
+	load:SetPoint("CENTER", frame.ApplyButton, "CENTER", 0, 0)
+	local save = PlanButton(frame, "Save", "Stores the plan on screen for this character. It does not change your talents.", SaveBuild)
+	save:SetPoint("RIGHT", load, "LEFT", -6, 0)
+	local clear = PlanButton(frame, "Clear", "Removes every point from the plan on screen. Press Save to store that.", ClearBuild)
+	clear:SetPoint("LEFT", load, "RIGHT", 6, 0)
+	frame.calculatorSaveButton = save
+	frame.calculatorLoadButton = load
+	frame.calculatorClearButton = clear
+
+	-- The game's dropdown, part of the talent window, so it hides and moves with it and its
+	-- menu closes with it. The talent buttons sit at level 1000 and up; 2000 keeps the dropdown
+	-- above them, where the window's own search list sits.
+	local dropdown = CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
+	dropdown:SetFrameLevel(2000)
+	dropdown:SetWidth(160)
+	dropdown:SetPoint("BOTTOM", frame.Background, "BOTTOM", 0, 36)
+	dropdown:SetupMenu(function(_, rootDescription)
+		local function isSelected(slot)
+			return (ns.slot or 1) == slot
 		end
-		UpdateSaveButton(frame)
-		frame.calculatorClearButton:Show()
-	end
-	if frame.calculatorSlotDropdown then
-		frame.calculatorSlotDropdown:Show()
-		UpdateSlotDropdown(frame)
-	end
+		local function setSelected(slot)
+			SelectSlot(frame, slot)
+		end
+		rootDescription:CreateRadio(SlotText(1), isSelected, setSelected, 1)
+		rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
+	end)
+	dropdown:Hide()
+	frame.calculatorSlotDropdown = dropdown
 end
 
-local function ShowRealActions(frame)
+local function ShowPlanControls(frame)
+	frame.calculatorSaveButton:Show()
+	frame.calculatorLoadButton:Show()
+	frame.calculatorClearButton:Show()
+	frame.calculatorSlotDropdown:Show()
+	-- The menu's button shows the slot on screen.
+	frame.calculatorSlotDropdown:GenerateMenu()
+	UpdatePlanButtons(frame)
+end
+
+local function HidePlanControls(frame)
 	local display = frame.ClassCurrencyDisplay
-	if display and display.calculatorLevelText then
-		display.calculatorLevelText:Hide()
+	for _, label in ipairs({ display.calculatorLevelText, display.calculatorVersionText, display.calculatorTitleText }) do
+		label:Hide()
 	end
-	if display and display.calculatorVersionText then
-		display.calculatorVersionText:Hide()
-	end
-	if display and display.calculatorTitleText then
-		display.calculatorTitleText:Hide()
-	end
-	if frame.calculatorSaveButton then
-		frame.calculatorSaveButton:Hide()
-		if frame.calculatorLoadButton then
-			frame.calculatorLoadButton:Hide()
-		end
-		frame.calculatorClearButton:Hide()
-	end
-	if frame.calculatorSlotDropdown then
-		frame.calculatorSlotDropdown:CloseMenu()
-		frame.calculatorSlotDropdown:Hide()
-	end
+	frame.calculatorSaveButton:Hide()
+	frame.calculatorLoadButton:Hide()
+	frame.calculatorClearButton:Hide()
+	frame.calculatorSlotDropdown:CloseMenu()
+	frame.calculatorSlotDropdown:Hide()
 	ShowCharacterTalentNumbers(frame)
-	frame.ApplyButton:Show()
+end
+
+-- The game's controls back as the game would draw them. While inspecting, the game
+-- keeps Apply hidden.
+local function ShowGameControls(frame)
+	frame.ApplyButton:SetShown(not frame:IsInspecting())
 	frame:UpdateConfigButtonsState()
 	frame:InitializeActiveSpec()
 end
 
-local function SnapshotRanks()
-	local copy = {}
-	for nodeID, stored in pairs(ns.ranks) do
-		if stored and (stored.ranks or 0) > 0 then
-			copy[nodeID] = {
-				ranks = stored.ranks,
-				entryID = stored.entryID or 0,
-			}
-		end
-	end
-	return copy
-end
+--------------------------------------------------------------------------------
+-- The tab
+--------------------------------------------------------------------------------
 
-function RememberCurrentPlan()
-	if ns.loadedSlot then
-		ns.planBySlot[ns.loadedSlot] = SnapshotRanks()
-	end
-end
-
-local function ApplySnapshot(copy)
-	ClearRankTable()
-	if not copy then
-		return
-	end
-	for nodeID, stored in pairs(copy) do
-		ns.ranks[nodeID] = {
-			ranks = stored.ranks,
-			entryID = stored.entryID or 0,
-		}
-	end
-end
-
--- Puts the selected slot's plan on the calculator: the unsaved edits from this
--- session if that slot has any, otherwise its saved plan. Primary is the first slot shown.
-function EnsureWorkingCopy()
-	local key = CharacterKey()
-	if key and ns.characterKey ~= key then
-		ns.characterKey = key
-		ns.loadedSlot = nil
-		ns.slot = nil
-		ns.planBySlot = {}
-		ClearRankTable()
-		ns.structure = {}
-		ns.incoming = {}
-	end
-	local group = ns.slot or 1
-	ns.slot = group
-	if ns.loadedSlot == group then
-		return
-	end
-	RememberCurrentPlan()
-	local kept = ns.planBySlot[group]
-	if kept then
-		ApplySnapshot(kept)
-	else
-		LoadSavedRanks(group)
-	end
-	ns.loadedSlot = group
-end
+local enteringCalculator = false
 
 local function EnterCalculator(frame)
 	if enteringCalculator then
@@ -2744,179 +2497,44 @@ local function EnterCalculator(frame)
 	-- the character's own talents instead of leaving the frame half switched.
 	local opened = xpcall(function()
 		frame.calculatorMode = true
-		HideRealActions(frame)
-		-- Read the live tree once. Rebuilding it on every point is counted as this addon's memory.
+		-- The tree is read each time the tab opens. Edits reuse what was read.
 		RememberFrame(frame)
 		ShowPlan(frame)
-		HideRealActions(frame)
+		ShowPlanControls(frame)
 	end, CallErrorHandler)
 	enteringCalculator = false
 	return opened
 end
 
-local restoringTree = false
-
--- The character's icons were only hidden. Put them back without reloading the spec.
+-- The character's pieces were only hidden. Put them back without reloading the spec.
 local function RestoreSharedTree(frame)
-	if restoringTree then
-		return
-	end
-	restoringTree = true
 	frame.calculatorMode = false
 	ShowClientTree(frame)
 	if frame.calculatorBoard then
 		frame.calculatorBoard:Hide()
 	end
-	ShowRealActions(frame)
-	restoringTree = false
+	HidePlanControls(frame)
+	ShowGameControls(frame)
 end
 
-local function SaveBuild()
-	local build = SaveSlot(ns.slot or 1, true)
-	-- Plans are saved per character, and the name can be missing right after login.
-	if not build then
-		Say("could not save, your character isn't fully loaded yet. Try again in a moment.")
-		return
-	end
-	for key in pairs(build) do
-		build[key] = nil
-	end
-	local nodes = {}
-	for nodeID, stored in pairs(ns.ranks) do
-		if stored.ranks and stored.ranks > 0 then
-			nodes[#nodes + 1] = {
-				nodeID = nodeID,
-				ranks = stored.ranks,
-				entryID = stored.entryID or 0,
-			}
-		end
-	end
-	build.nodes = nodes
-	RememberCurrentPlan()
-	Say(string.format("%s plan saved (%d/%d points).", SlotText(ns.slot or 1), TotalSpent(), ns.budget))
+-- Inspecting another player, from the inspect window or a talent link, fills this window
+-- with their talents. The plan steps aside: the window's own tab is selected again
+-- without loading the character's talents over theirs.
+local function LeaveForInspect(frame)
+	TabSystemOwnerMixin.SetTab(frame, frame:GetActiveTab())
 end
 
-local function ClearBuild(frame)
-	ClearRankTable()
-	ns.loadedSlot = ns.slot or 1
-	if ShowingCalculator(frame) then
-		ShowPlan(frame)
-		HideRealActions(frame)
-	end
-	RememberCurrentPlan()
-	Say(SlotText(ns.slot or 1) .. " plan cleared. Your saved plan is unchanged until you press Save.")
-end
-
-local function LoadSavedPlan(frame)
-	local group = ns.slot or 1
-	if not HasSavedBuild() then
-		return
-	end
-	local hadChanges = not PlanMatchesSaved()
-	LoadSavedRanks(group)
-	ns.loadedSlot = group
-	-- Said before ShowPlan, so a line about fitting the plan to the tree comes after it.
-	local message = string.format("saved %s plan loaded (%d/%d points).", SlotText(group), TotalSpent(), ns.budget)
-	if hadChanges then
-		message = message .. " Unsaved changes were discarded."
-	end
-	Say(message)
-	if ShowingCalculator(frame) then
-		ShowPlan(frame)
-		HideRealActions(frame)
-	end
-	RememberCurrentPlan()
-end
-
-local function CreateButtons(frame)
-	local load = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
-	load:SetSize(120, 22)
-	load:SetPoint("CENTER", frame.ApplyButton, "CENTER", 0, 0)
-	load:SetText("Load Saved")
-	load:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + 5)
-	load:SetScript("OnClick", function()
-		LoadSavedPlan(frame)
-	end)
-	load:Disable()
-	load:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Load Saved")
-		GameTooltip:AddLine("Puts the saved plan back on the calculator. It does not change your talents.", 1, 0.82, 0, true)
-		GameTooltip:Show()
-	end)
-	load:SetScript("OnLeave", GameTooltip_Hide)
-	load:Hide()
-
-	local save = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
-	save:SetSize(120, 22)
-	save:SetPoint("RIGHT", load, "LEFT", -6, 0)
-	save:SetText("Save")
-	save:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + 5)
-	save:SetScript("OnClick", function(self)
-		SaveBuild()
-		UpdateSaveButton(self:GetParent())
-	end)
-	save:Disable()
-	save:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Save build")
-		GameTooltip:AddLine("Stores this plan for this character. It does not change your talents.", 1, 0.82, 0, true)
-		GameTooltip:Show()
-	end)
-	save:SetScript("OnLeave", GameTooltip_Hide)
-	save:Hide()
-
-	local clear = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
-	clear:SetSize(120, 22)
-	clear:SetPoint("LEFT", load, "RIGHT", 6, 0)
-	clear:SetText("Clear")
-	clear:SetFrameLevel(save:GetFrameLevel())
-	clear:Disable()
-	clear:SetScript("OnClick", function()
-		ClearBuild(frame)
-	end)
-	clear:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Clear build")
-		GameTooltip:AddLine("Removes every point from the plan on screen. Press Save to store that.", 1, 0.82, 0, true)
-		GameTooltip:Show()
-	end)
-	clear:SetScript("OnLeave", GameTooltip_Hide)
-	clear:Hide()
-
-	frame.calculatorSaveButton = save
-	frame.calculatorLoadButton = load
-	frame.calculatorClearButton = clear
-
-	-- The game's dropdown, part of the talent window, so it hides and moves with it and its
-	-- menu closes with it. The talent buttons sit at level 1000 and up; 2000 keeps the dropdown
-	-- above them, where the window's own search list sits.
-	local dropdown = CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
-	dropdown:SetFrameLevel(2000)
-	dropdown:SetWidth(160)
-	dropdown:SetPoint("BOTTOM", frame.Background or frame, "BOTTOM", 0, 36)
-	dropdown:SetupMenu(function(_, rootDescription)
-		local function isSelected(group)
-			return (ns.slot or 1) == group
-		end
-		local function setSelected(group)
-			SelectSlot(frame, group)
-		end
-		rootDescription:CreateRadio(SlotText(1), isSelected, setSelected, 1)
-		rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
-	end)
-	dropdown:Hide()
-
-	frame.calculatorSlotDropdown = dropdown
-	UpdateSlotDropdown(frame)
-end
-
--- Opening the tab can fail (inspecting, or an error while drawing the plan).
--- The tab change is still running then, so the switch back waits one frame.
+-- Opening the tab can fail (inspecting, or an error while drawing the plan). The tab
+-- change is still running then, so the switch back waits one frame.
 local function ReturnToActiveTab(frame)
 	RestoreSharedTree(frame)
 	C_Timer.After(0, function()
-		if frame:GetTab() == frame.calculatorTabID then
+		if frame:GetTab() ~= frame.calculatorTabID then
+			return
+		end
+		if frame:IsInspecting() then
+			LeaveForInspect(frame)
+		else
 			frame:SetTab(frame:GetActiveTab())
 		end
 	end)
@@ -2929,13 +2547,12 @@ local function OpenCalculatorTab(frame)
 		return
 	end
 	if not EnterCalculator(frame) then
-		Say("couldn't open, returned to your talents.")
+		SayFailed("Couldn't open the plan. Showing your talents instead.")
 		ReturnToActiveTab(frame)
 	end
 end
 
 -- The calculator plans the player's own tree, so its tab is off while inspecting.
--- The tab then cannot be picked, and the switch back above is only for errors.
 local function UpdateCalculatorTab(frame)
 	local inspecting = frame:IsInspecting()
 	frame.TabSystem:SetTabEnabled(frame.calculatorTabID, not inspecting, inspecting and "Not available while inspecting." or nil)
@@ -2961,7 +2578,7 @@ local function Install(frame)
 		end
 		self.Text:SetText(text)
 	end)
-	CreateButtons(frame)
+	CreatePlanControls(frame)
 
 	-- Tab clicks run the SetTab the frame captured when it was made. That SetTab
 	-- calls TabSystemOwnerMixin.SetTab, so this hook sees every tab change.
@@ -2977,16 +2594,18 @@ local function Install(frame)
 		end
 	end)
 
-	hooksecurefunc(frame, "UpdateTabs", function(self)
+	hooksecurefunc(frame, "UpdateTabs", UpdateCalculatorTab)
+	hooksecurefunc(frame, "UpdateInspecting", function(self)
 		UpdateCalculatorTab(self)
-		UpdateSlotDropdown(self)
+		if self:IsInspecting() and self.calculatorMode then
+			LeaveForInspect(self)
+		end
 	end)
-	hooksecurefunc(frame, "UpdateInspecting", UpdateCalculatorTab)
 
 	-- The calculator tab has no spec config, so SetTab shows the locked-spec overlay.
 	hooksecurefunc(frame, "SetDisabledOverlayShown", function(self, shown)
 		if shown and ShowingCalculator(self) then
-			HideLockedOverlay(self)
+			self.DisabledOverlay:Hide()
 		end
 	end)
 
@@ -2999,14 +2618,12 @@ local function Install(frame)
 			end
 		end
 	end)
-
-	local function KeepTreeHidden(self)
+	hooksecurefunc(frame, "RefreshConfigID", function(self)
 		if ShowingCalculator(self) then
 			HideClientTree(self)
 		end
-	end
-	hooksecurefunc(frame, "RefreshConfigID", KeepTreeHidden)
-	-- The game drew no gates for its hidden buttons. ShowClientTree redraws them.
+	end)
+	-- The game drew no gates for its hidden buttons. ShowClientTree draws them again.
 	hooksecurefunc(frame, "RefreshGates", function(self)
 		if ShowingCalculator(self) then
 			self.calculatorGatesStale = true
@@ -3018,24 +2635,24 @@ local function Install(frame)
 	local function KeepPlanNumbers(self)
 		if ShowingCalculator(self) then
 			PaintSpent(self)
-			HideClientTree(self)
 		end
 	end
 	hooksecurefunc(frame, "RefreshClassCurrencyDisplay", KeepPlanNumbers)
 	hooksecurefunc(frame, "RefreshTreeHeaders", KeepPlanNumbers)
 
-	-- These show Apply, Undo, Reset and the spec controls again.
-	local function KeepRealActionsHidden(self)
+	-- These show Undo, Reset and the spec controls again. The window updates them on
+	-- its own, for example on every aura change while it is open, so this stays light.
+	local function KeepGameControlsHidden(self)
 		if ShowingCalculator(self) then
-			HideRealActions(self)
+			HideGameControls(self)
 			HideClientTree(self)
 		end
 	end
-	hooksecurefunc(frame, "UpdateConfigButtonsState", KeepRealActionsHidden)
-	hooksecurefunc(frame, "HandlePlayerTalentUpdate", KeepRealActionsHidden)
-	hooksecurefunc(frame, "UpdateInspecting", KeepRealActionsHidden)
+	hooksecurefunc(frame, "UpdateConfigButtonsState", KeepGameControlsHidden)
+	hooksecurefunc(frame, "HandlePlayerTalentUpdate", KeepGameControlsHidden)
 
-	-- The window's search results are up to date whenever it displays them.
+	-- The window's search results are up to date whenever it displays them. It does so
+	-- at the end of its own updates, after any new arrows were drawn.
 	hooksecurefunc(frame, "DisplayFullSearchResults", function(self)
 		if ShowingCalculator(self) then
 			ApplyPlanSearch(self)
@@ -3044,32 +2661,34 @@ local function Install(frame)
 	end)
 
 	frame:HookScript("OnShow", function(self)
-		if ShowingCalculator(self) and self:IsShown() then
+		if ShowingCalculator(self) then
 			ShowPlan(self)
-			HideRealActions(self)
 		end
 	end)
 
-	frame:UpdateTabs()
+	-- Color blind mode marks the talents that can take a point, as in the talent
+	-- window's own UpdateColorBlindModeUI. One callback is kept per owner, so the addon
+	-- registers as itself and the window's callback stays.
+	CVarCallbackRegistry:RegisterCallback("colorblindMode", function()
+		if ShowingCalculator(frame) then
+			for nodeID in pairs(ns.structure) do
+				PaintNode(frame, nodeID)
+			end
+		end
+	end, ns)
+
+	UpdateCalculatorTab(frame)
 end
 
-local function TryInstall()
-	if not C_AddOns.IsAddOnLoaded(TALENT_UI) then
-		return
-	end
-	if PlayerSpellsFrame and PlayerSpellsFrame.TalentsFrame then
+--------------------------------------------------------------------------------
+-- Loading
+--------------------------------------------------------------------------------
+
+-- The saved plans load with the addon. The talent window loads when the player first
+-- opens it, or before the addon when something opened it earlier.
+EventUtil.ContinueOnAddOnLoaded(addonName, function()
+	NormalizeSaved()
+	EventUtil.ContinueOnAddOnLoaded(TALENT_UI, function()
 		Install(PlayerSpellsFrame.TalentsFrame)
-	end
-end
-
-local events = CreateFrame("Frame")
-events:RegisterEvent("ADDON_LOADED")
-events:SetScript("OnEvent", function(_, _, name)
-	if name == addonName then
-		ReadEnums()
-		NormalizeSaved()
-		TryInstall()
-	elseif name == TALENT_UI then
-		TryInstall()
-	end
+	end)
 end)
