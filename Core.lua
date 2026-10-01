@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "1.0.0"
+local VERSION = "1.0.1"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -1586,12 +1586,16 @@ local function CreateNodeButton(frame, board, nodeID)
 	button.SpendText:SetJustifyH("CENTER")
 	-- The game's pulse on a talent that can take a point (SelectableGlow in
 	-- ClassTalentBaseButtonTemplate): the art set's glow, fading in and out, shown
-	-- only while it plays.
+	-- only while it plays. Its alpha comes from the animation, so it starts at 0.
+	-- The game's template for this (VisibleWhilePlayingAnimGroupTemplate) is not used:
+	-- made in Lua, an animation group gets the template's scripts but not its mixin,
+	-- so PaintNode shows and hides the glow itself.
 	local glow = button:CreateTexture(nil, "OVERLAY")
 	glow:SetSize(61, 61)
 	glow:SetPoint("CENTER")
 	glow:SetBlendMode("ADD")
-	local pulse = glow:CreateAnimationGroup(nil, "VisibleWhilePlayingAnimGroupTemplate")
+	glow:SetAlpha(0)
+	local pulse = glow:CreateAnimationGroup()
 	pulse:SetLooping("REPEAT")
 	pulse:SetToFinalAlpha(true)
 	glow.FadeIn = pulse:CreateAnimation("Alpha")
@@ -1705,10 +1709,11 @@ local function PaintNode(frame, nodeID)
 	TalentButtonUtil.SetSpendText(button, PlanSpendText(frame, nodeID))
 	TalentButtonArtMixin.ApplyVisualState(button, state)
 	-- ClassTalentButtonBaseMixin:UpdateSelectableGlow. A pulse already running goes on.
-	local pulse = button.SelectableGlow.Anim
+	local glow = button.SelectableGlow
 	local selectable = state == TalentButtonUtil.BaseVisualState.Selectable
-	if pulse:IsPlaying() ~= selectable then
-		pulse:SetPlaying(selectable)
+	if glow.Anim:IsPlaying() ~= selectable then
+		glow:SetShown(selectable)
+		glow.Anim:SetPlaying(selectable)
 	end
 	for _, choice in ipairs(button.choices) do
 		if choice:IsShown() then
