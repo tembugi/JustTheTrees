@@ -4,7 +4,7 @@ Rules for this addon. The shared rules are in `../AGENTS.md`.
 
 A mock talent planner in its own "Just the Trees" tab on the talent window: separate mock trees the player fills as if they had max points. Agreed with the user.
 
-The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_TITLE` in the code, also the tab text). It is for players who want simplicity, no extra features, and a look that belongs in the WoW Forever / Classic UI.
+The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_TITLE` in the code, also the tab text). CurseForge project ID: 1716979. It is for players who want simplicity, no extra features, and a look that belongs in the WoW Forever / Classic UI.
 
 ## Never
 
