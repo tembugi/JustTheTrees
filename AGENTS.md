@@ -46,7 +46,7 @@ The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_T
 ## Tests
 
 - `Tests/run.lua` runs the saved-plan tests and the plan tests. The plan tests play the unchanged `Core.lua` in `Tests/standin.lua`: Forever's talent window, copied from `wow-ui-source`, over a small made-up class tree (three trees with arrows, a choice, a tiered talent, two talents that shut each other out, an empty row, and the character's own points, which the plan must never read or change).
-- The stand-in's widgets have only the methods Forever's widgets have, listed in `Tests/WidgetAPI.lua`, which is made from BlizzardInterfaceResources' `Resources/WidgetAPI.lua` (its header says how). A new widget type or template the addon uses is added there and to the stand-in first.
+- The stand-in's widgets have only the methods Forever's widgets have, listed in `Tests/WidgetAPI.lua`, which is made from BlizzardInterfaceResources' `Resources/WidgetAPI.lua` (remade by `Tests/MakeWidgetAPI.lua`). A new widget type or template the addon uses is added there and to the stand-in first.
 - A rule change adds or changes its test in the same commit.
 
 ## Logo

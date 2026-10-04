@@ -3,7 +3,7 @@
 -- lists Region as inheriting itself; its WidgetHierarchy.png puts Region after ScriptRegion, so
 -- Region takes ScriptRegion's methods here.
 -- The stand-in's widgets have only these: calling any other method fails, as in the game.
--- Made by a script from that file; to update, make it again.
+-- Made by Tests/MakeWidgetAPI.lua; to update, run it again.
 return {
 	Frame = {
 		"AbortDrag", "AddAccessRestrictions", "AddForbiddenAspects", "AddRoleset", "AddSecretAspect",
