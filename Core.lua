@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "1.0.2"
+local VERSION = "1.0.3"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -1321,7 +1321,7 @@ local function ShowNodeTooltip(button)
 	if visual and visual.name then
 		GameTooltip_SetTitle(tooltip, visual.name)
 	end
-	local rankShown = HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(ranks)
+	local rankShown = HIGHLIGHT_FONT_COLOR:WrapTextInColorCode(tostring(ranks))
 	GameTooltip_AddHighlightLine(tooltip, TALENT_BUTTON_TOOLTIP_RANK_FORMAT:format(rankShown, structure.maxRanks))
 	-- AppendInfo is how the talent window fills in a rank's text once that data has loaded.
 	if currentID then
@@ -1582,7 +1582,10 @@ local function CreateNodeButton(frame, board, nodeID)
 	-- The tooltip reads these, and RefreshOpenTooltip finds plan buttons by them.
 	button.calculatorFrame = frame
 	button.calculatorNodeID = nodeID
-	button.SpendText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight", 2)
+	button.SpendText = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	-- Sublevel 2 of OVERLAY, as the game's own SpendText. Forever's API docs list no fourth
+	-- value for CreateFontString, so the sublevel is set on its own.
+	button.SpendText:SetDrawLayer("OVERLAY", 2)
 	button.SpendText:SetJustifyH("CENTER")
 	-- The game's pulse on a talent that can take a point (SelectableGlow in
 	-- ClassTalentBaseButtonTemplate): the art set's glow, fading in and out, shown

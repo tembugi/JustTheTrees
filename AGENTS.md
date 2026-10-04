@@ -42,3 +42,7 @@ The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_T
 - `NormalizeSaved` rebuilds `JustTheTreesDB` on every load: `format`, then per character the two plans, each a list of `nodeID`, `ranks`, `entryID`. Ranks are whole numbers from 1 to the budget, and each node appears once.
 - A plan shown on the tree is fitted to it (`FitPlanToTree`): ranks capped at the talent's max, a choice the node no longer has becomes its first one, and points over the budget come off the deepest rows.
 - Own class only.
+
+## Logo
+
+`Logo/JustTheTrees-logo.svg` is the logo (a gold double ring, a 3 x 4 grid of talent squares in gold, green and grey with two arrows), redrawn as SVG on 2026-10-04 from the PNG on CurseForge, whose colours were measured. `Logo/make_logo.py` renders the 400 x 400 CurseForge PNG and `Icon.tga`, the addon list's icon (`## IconTexture`; the user asked for the logos in game, 2026-10-04).
