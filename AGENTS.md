@@ -43,6 +43,12 @@ The name is "Just the Trees" (folder, repo and packages `JustTheTrees`; `ADDON_T
 - A plan shown on the tree is fitted to it (`FitPlanToTree`): ranks capped at the talent's max, a choice the node no longer has becomes its first one, and points over the budget come off the deepest rows.
 - Own class only.
 
+## Tests
+
+- `Tests/run.lua` runs the saved-plan tests and the plan tests. The plan tests play the unchanged `Core.lua` in `Tests/standin.lua`: Forever's talent window, copied from `wow-ui-source`, over a small made-up class tree (three trees with arrows, a choice, a tiered talent, two talents that shut each other out, an empty row, and the character's own points, which the plan must never read or change).
+- The stand-in's widgets have only the methods Forever's widgets have, listed in `Tests/WidgetAPI.lua`, which is made from BlizzardInterfaceResources' `Resources/WidgetAPI.lua` (its header says how). A new widget type or template the addon uses is added there and to the stand-in first.
+- A rule change adds or changes its test in the same commit.
+
 ## Logo
 
 `Logo/JustTheTrees-logo.svg` is the logo (a gold double ring, a 3 x 4 grid of talent squares in gold, green and grey with two arrows), redrawn as SVG on 2026-10-04 from the PNG on CurseForge, whose colours were measured. `Logo/make_logo.py` renders the 400 x 400 CurseForge PNG and `Icon.tga`, the addon list's icon (`## IconTexture`; the user asked for the logos in game, 2026-10-04).
