@@ -2,8 +2,8 @@
 --
 -- Every function in the addon is local to its file, so each test loads the unchanged file and
 -- watches what it does. The saved-plan tests need only two pieces of the game, copied from
--- wow-ui-source (forever, 1.60.1): Enum.TraitEdgeType (TraitConstantsDocumentation.lua) and
--- EventUtil.ContinueOnAddOnLoaded (EventUtil.lua). The plan tests play the addon in
+-- wow-ui-source (forever, 1.60.1): Enum.TraitEdgeType (TraitConstantsDocumentation.lua) and a
+-- frame's ADDON_LOADED event, with C_AddOns.IsAddOnLoaded. The plan tests play the addon in
 -- Tests/standin.lua, a stand-in for Forever's talent window with a small made-up class tree.
 
 -- This file runs under luajit, outside the game, and uses standard Lua's loadfile and io, which
@@ -18,16 +18,23 @@ local PLAN_BUDGET = 51
 -- the addon's ADDON_LOADED. Returns the saved plans after the addon has cleaned them.
 local function Load(saved)
 	Enum = { TraitEdgeType = { VisualOnly = 0, DeprecatedRankConnection = 1, SufficientForAvailability = 2, RequiredForAvailability = 3, MutuallyExclusive = 4, DeprecatedSelectionOption = 5 } }
-	-- An addon that isn't loaded yet runs the callback on its ADDON_LOADED; the talent window
-	-- isn't loaded in these tests.
-	local waiting = {}
-	EventUtil = {}
-	function EventUtil.ContinueOnAddOnLoaded(addOnName, callback)
-		waiting[addOnName] = callback
+	-- The addon's frame gets its ADDON_LOADED after the file has run; the talent window isn't
+	-- loaded in these tests.
+	local frame = {}
+	function CreateFrame()
+		return frame
+	end
+	function frame:RegisterEvent() end
+	function frame:SetScript(name, func)
+		self[name] = func
+	end
+	C_AddOns = {}
+	function C_AddOns.IsAddOnLoaded()
+		return false, false
 	end
 	JustTheTreesDB = saved
 	assert(loadfile("Core.lua"))(ADDON_NAME, {})
-	waiting[ADDON_NAME]()
+	frame:OnEvent("ADDON_LOADED", ADDON_NAME)
 	return JustTheTreesDB
 end
 
@@ -582,6 +589,14 @@ Test("if the plan can't be drawn, it says so and shows the character's talents",
 	Equal(#game.errors, 1, "errors after")
 end)
 
+Test("the tab is there when the talent window loaded before the addon", function()
+	local game = NewGame({ talentWindowFirst = true })
+	game:OpenPlan()
+	Equal(game.frame.calculatorTabID ~= nil, true, "the plan's tab")
+	Spend(game, { A1, 1 })
+	Equal(game:Ranks(A1), 1, "a point in the plan")
+end)
+
 Test("closing and opening the window keeps the plan on screen", function()
 	local game = NewGame()
 	game:OpenPlan()
@@ -622,8 +637,7 @@ Test("color blind mode marks the talents that can take a point", function()
 	local game = NewGame()
 	game:OpenPlan()
 	Equal(game:Button(A1).SelectableIcon:IsShown(), false, "mark without color blind mode")
-	game.cvars.colorblindMode = true
-	game.cvarCallback.func()
+	game:SetCVar("colorblindMode", true)
 	Equal(game:Button(A1).SelectableIcon:IsShown(), true, "mark on A1")
 	Equal(game:Button(A3).SelectableIcon:IsShown(), false, "mark on gated A3")
 end)

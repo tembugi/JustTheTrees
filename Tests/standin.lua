@@ -7,7 +7,7 @@
 --     Blizzard_SharedTalentButtonTemplates (the search mark), Blizzard_SharedTalentFrame.lua,
 --     Blizzard_SharedTalentFrameTemplates.xml (the gate) and Camelot/Blizzard_SharedTalentOverrides.lua
 --   Blizzard_PlayerSpells: Camelot/ClassTalents/Blizzard_ClassTalentsFrame.lua
---   Blizzard_SharedXML: TabSystemOwner.lua, TabSystemTemplates.lua, EventUtil.lua, MathUtil.lua
+--   Blizzard_SharedXML: TabSystemOwner.lua, TabSystemTemplates.lua, MathUtil.lua
 --   Blizzard_SpellSearch: Blizzard_SpellSearchUtil.lua
 -- Strings are from BlizzardInterfaceResources (enUS), and the widgets have only the methods
 -- Forever's widgets have (Tests/WidgetAPI.lua). The tree's data is made up: Forever's trees come
@@ -140,6 +140,12 @@ function Widget:Show()
 end
 function Widget:Hide()
 	self:SetShown(false)
+end
+-- A frame gets the events it registered, in its OnEvent script.
+function Widget:RegisterEvent(event)
+	local frames = game.eventFrames[event] or {}
+	game.eventFrames[event] = frames
+	frames[#frames + 1] = self
 end
 function Widget:SetScript(name, func)
 	self.scripts[name] = func
@@ -432,7 +438,7 @@ return function(options)
 		writes = {},
 		timers = {},
 		cvars = {},
-		addOnCallbacks = {},
+		eventFrames = {},
 		loadedAddOns = {},
 		search = {},
 		modified = {},
@@ -560,28 +566,24 @@ return function(options)
 		end
 	end
 
-	-- EventUtil.ContinueOnAddOnLoaded: now if the addon is loaded, else on its ADDON_LOADED.
+	-- Events go to each frame that registered them.
+	function game:FireEvent(event, ...)
+		for _, frame in ipairs(self.eventFrames[event] or {}) do
+			local script = frame.scripts.OnEvent
+			if script then
+				script(frame, event, ...)
+			end
+		end
+	end
+
+	-- An addon is loaded once its ADDON_LOADED has fired.
 	C_AddOns = {}
 	function C_AddOns.IsAddOnLoaded(name)
 		return game.loadedAddOns[name] == true, game.loadedAddOns[name] == true
 	end
-	EventUtil = {}
-	function EventUtil.ContinueOnAddOnLoaded(name, callback)
-		if select(2, C_AddOns.IsAddOnLoaded(name)) then
-			callback()
-			return
-		end
-		local list = game.addOnCallbacks[name] or {}
-		game.addOnCallbacks[name] = list
-		list[#list + 1] = callback
-	end
 	local function AddOnLoaded(name)
 		game.loadedAddOns[name] = true
-		local list = game.addOnCallbacks[name] or {}
-		game.addOnCallbacks[name] = nil
-		for _, callback in ipairs(list) do
-			callback()
-		end
+		game:FireEvent("ADDON_LOADED", name)
 	end
 
 	C_Timer = {}
@@ -589,12 +591,14 @@ return function(options)
 		game.timers[#game.timers + 1] = callback
 	end
 
+	-- CVars: a change fires CVAR_UPDATE with the name and the new value as text.
 	CVarCallbackRegistry = {}
-	function CVarCallbackRegistry:RegisterCallback(cvar, func)
-		game.cvarCallback = { cvar = cvar, func = func }
-	end
 	function CVarCallbackRegistry:GetCVarValueBool(cvar)
 		return game.cvars[cvar] == true
+	end
+	function game:SetCVar(cvar, value)
+		self.cvars[cvar] = value
+		self:FireEvent("CVAR_UPDATE", cvar, value and "1" or "0")
 	end
 
 	-- Spells. ASSUMED: every spell's data is loaded, named after its talent's entry.
@@ -1483,7 +1487,12 @@ return function(options)
 	-- Playing
 	----------------------------------------------------------------------------
 
-	-- The addon loads with its saved plans, as at login.
+	-- The addon loads with its saved plans, as at login. Something may have loaded the
+	-- talent window before it.
+	if options.talentWindowFirst then
+		game.frame = NewTalentsFrame()
+		AddOnLoaded("Blizzard_PlayerSpells")
+	end
 	JustTheTreesDB = options.saved
 	game.ns = {}
 	assert(loadfile("Core.lua"))("JustTheTrees", game.ns)

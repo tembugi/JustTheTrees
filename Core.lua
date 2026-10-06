@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "1.0.3"
+local VERSION = "1.0.4"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -20,6 +20,11 @@ local TALENT_UI = "Blizzard_PlayerSpells"
 local REQUIRED_EDGE = Enum.TraitEdgeType.RequiredForAvailability
 local SUFFICIENT_EDGE = Enum.TraitEdgeType.SufficientForAvailability
 local EXCLUSIVE_EDGE = Enum.TraitEdgeType.MutuallyExclusive
+
+-- The addon's own frame for game events (see Loading), and the color blind mode
+-- update, set once the talent window is installed.
+local events = CreateFrame("Frame")
+local OnColorBlindMode
 
 --------------------------------------------------------------------------------
 -- Saved plans
@@ -2675,15 +2680,17 @@ local function Install(frame)
 	end)
 
 	-- Color blind mode marks the talents that can take a point, as in the talent
-	-- window's own UpdateColorBlindModeUI. One callback is kept per owner, so the addon
-	-- registers as itself and the window's callback stays.
-	CVarCallbackRegistry:RegisterCallback("colorblindMode", function()
+	-- window's own UpdateColorBlindModeUI. Watched with CVAR_UPDATE on the addon's own
+	-- frame, not CVarCallbackRegistry: registering there writes the addon's callback into
+	-- Blizzard's shared registry, which taints it.
+	OnColorBlindMode = function()
 		if ShowingCalculator(frame) then
 			for nodeID in pairs(ns.structure) do
 				PaintNode(frame, nodeID)
 			end
 		end
-	end, ns)
+	end
+	events:RegisterEvent("CVAR_UPDATE")
 
 	UpdateCalculatorTab(frame)
 end
@@ -2693,10 +2700,23 @@ end
 --------------------------------------------------------------------------------
 
 -- The saved plans load with the addon. The talent window loads when the player first
--- opens it, or before the addon when something opened it earlier.
-EventUtil.ContinueOnAddOnLoaded(addonName, function()
-	NormalizeSaved()
-	EventUtil.ContinueOnAddOnLoaded(TALENT_UI, function()
-		Install(PlayerSpellsFrame.TalentsFrame)
-	end)
+-- opens it, or before the addon when something opened it earlier. Watched here, not with
+-- EventUtil.ContinueOnAddOnLoaded: that writes the addon's callback into Blizzard's shared
+-- event registry, which taints it.
+events:RegisterEvent("ADDON_LOADED")
+events:SetScript("OnEvent", function(_, event, ...)
+	if event == "ADDON_LOADED" then
+		if ... == addonName then
+			NormalizeSaved()
+			if select(2, C_AddOns.IsAddOnLoaded(TALENT_UI)) then
+				Install(PlayerSpellsFrame.TalentsFrame)
+			end
+		elseif ... == TALENT_UI then
+			Install(PlayerSpellsFrame.TalentsFrame)
+		end
+	elseif event == "CVAR_UPDATE" then
+		if ... == "colorblindMode" then
+			OnColorBlindMode()
+		end
+	end
 end)
