@@ -626,6 +626,16 @@ Test("below the talent level the menu button opens the talents tab, not the plan
 	Equal(game.frame.calculatorMode == true, false, "no plan tab")
 end)
 
+-- The window must not be drawn on the spell book page. The switch happens in the same open, so
+-- right after the click the window already shows talents, maximized, with no frame run in between.
+Test("below the talent level the talents tab is set in the same open, with no frame in between", function()
+	local game = NewGame({ belowTalentLevel = true })
+	game:PressTalentButton()
+	Equal(game:WindowShown(), true, "window shown before any frame runs")
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab before any frame runs")
+	Equal(game:WindowMinimized(), false, "maximized before any frame runs")
+end)
+
 -- The spell book opens minimized. The talents tab can't be minimized, so the window must be
 -- maximized before the switch, or the switch restarts the window on its spell book page.
 Test("below the talent level with the spell book minimized, the talents tab still opens", function()

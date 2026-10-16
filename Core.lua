@@ -2704,14 +2704,10 @@ local function Install(frame)
 		end
 	end)
 	-- Runs after the game's own open code, which picks the spell book below the level.
-	-- The game finishes its own open code after this hook, so the switch waits a frame.
+	-- The switch happens in the same open, so nothing is drawn on the spell book page.
 	PlayerSpellsFrame:HookScript("OnShow", function(self)
 		if openPending then
-			C_Timer.After(0, function()
-				if openPending and self:IsShown() then
-					ShowTalentsTab(self)
-				end
-			end)
+			ShowTalentsTab(self)
 		end
 	end)
 	-- The game also hides the window to change its size, so hiding does not cancel a pending switch.
@@ -2764,7 +2760,10 @@ local function InstallBelowLevel()
 		if PlayerSpellsFrame:IsShown() then
 			ShowTalentsTab(PlayerSpellsFrame)
 		else
+			-- Set while hidden, so the game's open code keeps the spell book it finds and does
+			-- not pick another tab. The switch to talents follows in the same open.
 			openPending = true
+			PlayerSpellsFrame:SetTab(PlayerSpellsFrame.spellBookTabID)
 			ShowUIPanel(PlayerSpellsFrame)
 		end
 	end)
