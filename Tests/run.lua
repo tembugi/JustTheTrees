@@ -616,13 +616,25 @@ end)
 
 -- Below the talent level the menu button is clickable, and a click opens the game's own
 -- talent window. No plan tab is opened there.
-Test("below the talent level the menu button opens the talent window, not the plan", function()
+Test("below the talent level the menu button opens the talents tab, not the plan", function()
 	local game = NewGame({ belowTalentLevel = true })
 	Equal(TalentMicroButton:IsEnabled(), true, "button enabled")
 	game:PressTalentButton()
 	game:RunTimers()
 	Equal(game:WindowShown(), true, "window shown")
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
 	Equal(game.frame.calculatorMode == true, false, "no plan tab")
+end)
+
+Test("below the talent level a click on the menu button while the spell book shows opens the talents tab", function()
+	local game = NewGame({ belowTalentLevel = true })
+	game:OpenTalentWindow()
+	game:RunTimers()
+	Equal(game:WindowTab(), PlayerSpellsFrame.spellBookTabID, "the spell book page is showing")
+	game:PressTalentButton()
+	game:RunTimers()
+	Equal(game:WindowShown(), true, "window shown")
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
 end)
 
 Test("shift-click puts the talent's link in chat", function()

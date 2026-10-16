@@ -2571,6 +2571,22 @@ local function UpdateCalculatorTab(frame)
 	frame.TabSystem:SetTabEnabled(frame.calculatorTabID, not inspecting, inspecting and "Not available while inspecting." or nil)
 end
 
+-- The window's talents tab is off below the level, but it can still be shown. The tree on
+-- it is the game's own (the spec tab inside it). The plan's tab is turned off here.
+local openPending = false
+
+local function ShowTalentsTab(window)
+	openPending = false
+	if window:GetTab() ~= window.talentTabID then
+		window:SetTab(window.talentTabID)
+	end
+	-- The tree may still be on the plan's tab from an earlier open: put the game's tree back.
+	local talents = window.TalentsFrame
+	if talents.calculatorMode then
+		talents:SetTab(talents:GetActiveTab())
+	end
+end
+
 -- Every hook here runs after Blizzard's own function and leaves that function in
 -- place. hooksecurefunc keeps the addon's code out of the talent frame's own work,
 -- so applying talents and switching specs run untainted.
@@ -2678,6 +2694,15 @@ local function Install(frame)
 			ShowPlan(self)
 		end
 	end)
+	-- Runs after the game's own open code, which picks the spell book below the level.
+	PlayerSpellsFrame:HookScript("OnShow", function(self)
+		if openPending then
+			ShowTalentsTab(self)
+		end
+	end)
+	PlayerSpellsFrame:HookScript("OnHide", function()
+		openPending = false
+	end)
 
 	-- Color blind mode marks the talents that can take a point, as in the talent
 	-- window's own UpdateColorBlindModeUI. Watched with CVAR_UPDATE on the addon's own
@@ -2701,8 +2726,8 @@ end
 
 -- The game greys out the talents menu button until the character has earned a talent point
 -- (PlayerSpellsMicroButtonMixin:UpdateMicroButton). The button is made clickable again
--- while that holds, and a click opens the game's own talent window. The window shows what
--- the game shows at that level, and no plan tab is opened.
+-- while that holds, and a click opens the window on its talents tab, which holds the game's
+-- own tree. No plan tab is opened there.
 local function EnableLockedTalentButton()
 	if not C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
 		TalentMicroButton:Enable()
@@ -2711,12 +2736,17 @@ end
 
 local function InstallBelowLevel()
 	-- The game's toggle refuses the talent tab while the button is locked and shows nothing.
-	-- Here the window is shown instead, on the tab the game picks there. While the button is
-	-- locked the talents tab can't be active, so a toggle never closes the window here.
+	-- Here the talents tab is shown instead. The game opens the window on its spell book
+	-- page first, so a window that is opening gets its tab after that page is set.
 	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", function(suggestedTab)
-		if suggestedTab == PlayerSpellsUtil.FrameTabs.ClassTalents and PlayerSpellsFrame
-			and not DISALLOW_FRAME_TOGGLING and not C_SpecializationInfo.HasPlayerEarnedATalentPoint()
-			and not PlayerSpellsFrame:IsShown() then
+		if suggestedTab ~= PlayerSpellsUtil.FrameTabs.ClassTalents or not PlayerSpellsFrame
+			or DISALLOW_FRAME_TOGGLING or C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
+			return
+		end
+		if PlayerSpellsFrame:IsShown() then
+			ShowTalentsTab(PlayerSpellsFrame)
+		else
+			openPending = true
 			ShowUIPanel(PlayerSpellsFrame)
 		end
 	end)
