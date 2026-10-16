@@ -32,6 +32,12 @@ local function Load(saved)
 	function C_AddOns.IsAddOnLoaded()
 		return false, false
 	end
+	-- The base UI the addon hooks at login (the talent hotkey, the menu button). These
+	-- tests don't play it, so the hooks only have to exist; the window's tests play them.
+	function hooksecurefunc() end
+	PlayerUtil = { CanUseClassTalents = function() return true end }
+	PlayerSpellsUtil = { FrameTabs = { ClassTalents = "talents" } }
+	TalentMicroButton = { Enable = function() end }
 	JustTheTreesDB = saved
 	assert(loadfile("Core.lua"))(ADDON_NAME, {})
 	frame:OnEvent("ADDON_LOADED", ADDON_NAME)
@@ -606,6 +612,38 @@ Test("closing and opening the window keeps the plan on screen", function()
 	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "tab")
 	Equal(game:Ranks(A1), 3, "A1")
 	Equal(game:GamePiecesShown(), 0, "the game's pieces")
+end)
+
+Test("below the talent level the talent hotkey still opens the plan", function()
+	local game = NewGame({ belowTalentLevel = true })
+	game:PressTalentKey()
+	Equal(game:WindowShown(), true, "window shown")
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
+	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "plan tab")
+	Spend(game, { A1, 1 })
+	Equal(game:Ranks(A1), 1, "a point in the plan")
+end)
+
+Test("below the talent level the menu button opens the plan, and a second press closes it", function()
+	local game = NewGame({ belowTalentLevel = true })
+	Equal(TalentMicroButton:IsEnabled(), true, "button enabled")
+	game:PressTalentButton()
+	Equal(game:WindowShown(), true, "window shown")
+	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "plan tab")
+	game:RunTimers()
+	game:PressTalentButton()
+	Equal(game:WindowShown(), false, "closed by the second press")
+	game:RunTimers()
+	game:PressTalentKey()
+	Equal(game:WindowShown(), true, "the hotkey opens it again")
+end)
+
+Test("the talent hotkey opens the window on the talents tab when the level allows it", function()
+	local game = NewGame()
+	game:PressTalentKey()
+	Equal(game:WindowShown(), true, "window shown")
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
+	Equal(game.frame.calculatorMode == true, false, "the plan is not forced open")
 end)
 
 Test("shift-click puts the talent's link in chat", function()
