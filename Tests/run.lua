@@ -35,7 +35,7 @@ local function Load(saved)
 	-- The base UI the addon hooks at login (the talent window's toggle and the menu button).
 	-- These tests don't play it, so the hooks only have to exist.
 	function hooksecurefunc() end
-	PlayerUtil = { CanUseClassTalents = function() return true end }
+	C_SpecializationInfo = { HasPlayerEarnedATalentPoint = function() return true end }
 	PlayerSpellsUtil = { FrameTabs = { ClassTalents = "talents" } }
 	TalentMicroButton = { Enable = function() end }
 	JustTheTreesDB = saved

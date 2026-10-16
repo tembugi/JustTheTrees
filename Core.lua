@@ -2699,27 +2699,24 @@ end
 -- Below the talent level
 --------------------------------------------------------------------------------
 
--- The game's talent tab is off below the talent level: its menu button is greyed out and
--- the talent window does not open. The button is made clickable here, and a click opens
--- the game's own talent window. The window shows what the game shows at that level, and
--- no plan tab is opened.
-local function TalentTabLocked()
-	local inspecting = PlayerSpellsFrame and PlayerSpellsFrame:IsInspecting()
-	return not inspecting and not PlayerUtil.CanUseClassTalents()
-end
-
+-- The game greys out the talents menu button until the character has earned a talent point
+-- (PlayerSpellsMicroButtonMixin:UpdateMicroButton). The button is made clickable again
+-- while that holds, and a click opens the game's own talent window. The window shows what
+-- the game shows at that level, and no plan tab is opened.
 local function EnableLockedTalentButton()
-	if TalentTabLocked() then
+	if not C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
 		TalentMicroButton:Enable()
 	end
 end
 
 local function InstallBelowLevel()
-	-- The game's toggle refuses the talent tab below the level and shows nothing. Here the
-	-- window is shown instead, on the tab the game picks there.
+	-- The game's toggle refuses the talent tab while the button is locked and shows nothing.
+	-- Here the window is shown instead, on the tab the game picks there. While the button is
+	-- locked the talents tab can't be active, so a toggle never closes the window here.
 	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", function(suggestedTab)
 		if suggestedTab == PlayerSpellsUtil.FrameTabs.ClassTalents and PlayerSpellsFrame
-			and not DISALLOW_FRAME_TOGGLING and TalentTabLocked() and not PlayerSpellsFrame:IsShown() then
+			and not DISALLOW_FRAME_TOGGLING and not C_SpecializationInfo.HasPlayerEarnedATalentPoint()
+			and not PlayerSpellsFrame:IsShown() then
 			ShowUIPanel(PlayerSpellsFrame)
 		end
 	end)

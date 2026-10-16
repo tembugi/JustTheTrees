@@ -713,6 +713,11 @@ return function(options)
 	function C_SpecializationInfo.GetActiveSpecGroup()
 		return game.activeSpecGroup
 	end
+	-- The menu button's own test (PlayerSpellsMicroButtonMixin:UpdateMicroButton): the talents
+	-- are unlocked once a point is earned, which the stand-in ties to the talent level.
+	function C_SpecializationInfo.HasPlayerEarnedATalentPoint()
+		return not game.belowTalentLevel
+	end
 	function C_SpecializationInfo.GetCombatConfigIDForSpecGroup(specGroup)
 		return CONFIGS[specGroup]
 	end
