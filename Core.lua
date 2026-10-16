@@ -2696,6 +2696,38 @@ local function Install(frame)
 end
 
 --------------------------------------------------------------------------------
+-- Below the talent level
+--------------------------------------------------------------------------------
+
+-- The game's talent tab is off below the talent level: its menu button is greyed out and
+-- the talent window does not open. The button is made clickable here, and a click opens
+-- the game's own talent window. The window shows what the game shows at that level, and
+-- no plan tab is opened.
+local function TalentTabLocked()
+	local inspecting = PlayerSpellsFrame and PlayerSpellsFrame:IsInspecting()
+	return not inspecting and not PlayerUtil.CanUseClassTalents()
+end
+
+local function EnableLockedTalentButton()
+	if TalentTabLocked() then
+		TalentMicroButton:Enable()
+	end
+end
+
+local function InstallBelowLevel()
+	-- The game's toggle refuses the talent tab below the level and shows nothing. Here the
+	-- window is shown instead, on the tab the game picks there.
+	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", function(suggestedTab)
+		if suggestedTab == PlayerSpellsUtil.FrameTabs.ClassTalents and PlayerSpellsFrame
+			and not DISALLOW_FRAME_TOGGLING and TalentTabLocked() and not PlayerSpellsFrame:IsShown() then
+			ShowUIPanel(PlayerSpellsFrame)
+		end
+	end)
+	hooksecurefunc(TalentMicroButton, "UpdateMicroButton", EnableLockedTalentButton)
+	EnableLockedTalentButton()
+end
+
+--------------------------------------------------------------------------------
 -- Loading
 --------------------------------------------------------------------------------
 
@@ -2708,6 +2740,7 @@ events:SetScript("OnEvent", function(_, event, ...)
 	if event == "ADDON_LOADED" then
 		if ... == addonName then
 			NormalizeSaved()
+			InstallBelowLevel()
 			if select(2, C_AddOns.IsAddOnLoaded(TALENT_UI)) then
 				Install(PlayerSpellsFrame.TalentsFrame)
 			end

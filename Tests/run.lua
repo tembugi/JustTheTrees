@@ -32,6 +32,12 @@ local function Load(saved)
 	function C_AddOns.IsAddOnLoaded()
 		return false, false
 	end
+	-- The base UI the addon hooks at login (the talent window's toggle and the menu button).
+	-- These tests don't play it, so the hooks only have to exist.
+	function hooksecurefunc() end
+	PlayerUtil = { CanUseClassTalents = function() return true end }
+	PlayerSpellsUtil = { FrameTabs = { ClassTalents = "talents" } }
+	TalentMicroButton = { Enable = function() end }
 	JustTheTreesDB = saved
 	assert(loadfile("Core.lua"))(ADDON_NAME, {})
 	frame:OnEvent("ADDON_LOADED", ADDON_NAME)
@@ -606,6 +612,17 @@ Test("closing and opening the window keeps the plan on screen", function()
 	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "tab")
 	Equal(game:Ranks(A1), 3, "A1")
 	Equal(game:GamePiecesShown(), 0, "the game's pieces")
+end)
+
+-- Below the talent level the menu button is clickable, and a click opens the game's own
+-- talent window. No plan tab is opened there.
+Test("below the talent level the menu button opens the talent window, not the plan", function()
+	local game = NewGame({ belowTalentLevel = true })
+	Equal(TalentMicroButton:IsEnabled(), true, "button enabled")
+	game:PressTalentButton()
+	game:RunTimers()
+	Equal(game:WindowShown(), true, "window shown")
+	Equal(game.frame.calculatorMode == true, false, "no plan tab")
 end)
 
 Test("shift-click puts the talent's link in chat", function()
