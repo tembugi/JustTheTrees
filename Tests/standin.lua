@@ -1487,22 +1487,37 @@ return function(options)
 			return available
 		end
 		-- The window's minimize logic (PlayerSpellsFrameMixin:SetMinimized, ForceMaximize,
-		-- SetTab, DoesTabSupportMinimizedMode, ShouldManuallyMinimize). A change of size hides
-		-- and shows the window, so the spell book's own reset runs again. ASSUMED: the player's
-		-- spellBookMinimize setting is on, so the spell book opens minimized.
+		-- SetMinimizingEnabled, SetTab, DoesTabSupportMinimizedMode, ShouldManuallyMinimize).
+		-- A change of size on a shown window hides and shows it, so the open code runs again.
+		-- ASSUMED: the player's spellBookMinimize setting is on, so the spell book is minimized,
+		-- and the panel manager minimizes the window as it is shown when ShouldAutoMinimize says so
+		-- (the window is registered with autoMinimizeOnCondition = ShouldAutoMinimize).
 		window.isMinimized = false
+		window.isMinimizingEnabled = true
+		window.manualMinimizeEnabled = true
 		function window:DoesTabSupportMinimizedMode(tabID)
 			return tabID == self.spellBookTabID
 		end
 		function window:ShouldManuallyMinimize(tabID)
-			return self:DoesTabSupportMinimizedMode(tabID)
+			return self.isMinimizingEnabled and self.manualMinimizeEnabled
+				and self:DoesTabSupportMinimizedMode(tabID or self:GetTab())
+		end
+		function window:ShouldAutoMinimize()
+			return self:ShouldManuallyMinimize()
+		end
+		function window:SetMinimizingEnabled(enabled)
+			self.isMinimizingEnabled = enabled
 		end
 		function window:SetMinimized(shouldBeMinimized)
 			if self.isMinimized == shouldBeMinimized then
 				return
 			end
+			if shouldBeMinimized then
+				assert(self.isMinimizingEnabled, "minimized while minimizing is off")
+			end
 			local wasShown = self:IsShown()
 			if wasShown then
+				game.windowCycles = (game.windowCycles or 0) + 1
 				self:Hide()
 			end
 			self.isMinimized = shouldBeMinimized
@@ -1511,7 +1526,9 @@ return function(options)
 			end
 		end
 		function window:ForceMaximize()
+			self:SetMinimizingEnabled(false)
 			self:SetMinimized(false)
+			self:SetMinimizingEnabled(true)
 		end
 		function window:SetTab(tabID)
 			TabSystemOwnerMixin.SetTab(self, tabID)
@@ -1608,6 +1625,9 @@ return function(options)
 	DISALLOW_FRAME_TOGGLING = false
 	MICRO_BUTTONS_DISABLED = false
 	function ShowUIPanel(frame)
+		if frame.ShouldAutoMinimize and frame:ShouldAutoMinimize() then
+			frame:SetMinimized(true)
+		end
 		frame:Show()
 	end
 	function HideUIPanel(frame)
@@ -1700,6 +1720,13 @@ return function(options)
 	end
 	function game:WindowTab()
 		return PlayerSpellsFrame:GetTab()
+	end
+	-- How many times the window was hidden and shown again to change its size.
+	function game:WindowCycles()
+		return game.windowCycles or 0
+	end
+	function game:WindowMinimizingEnabled()
+		return PlayerSpellsFrame.isMinimizingEnabled == true
 	end
 	function game:WindowMinimized()
 		return PlayerSpellsFrame.isMinimized == true

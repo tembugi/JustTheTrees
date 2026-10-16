@@ -636,6 +636,19 @@ Test("below the talent level the talents tab is set in the same open, with no fr
 	Equal(game:WindowMinimized(), false, "maximized before any frame runs")
 end)
 
+-- A size change on a shown window hides and shows it again, and the open runs twice. The window
+-- must open on talents without that, with minimizing back on afterwards.
+Test("below the talent level the window opens on talents without a hide and show to resize it", function()
+	local game = NewGame({ belowTalentLevel = true })
+	game:PressTalentButton()
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
+	Equal(game:WindowCycles(), 0, "hide and show cycles")
+	Equal(game:WindowMinimizingEnabled(), true, "minimizing is back on")
+	game:RunTimers()
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab after the frame")
+	Equal(game:WindowMinimizingEnabled(), true, "minimizing is on after the frame")
+end)
+
 -- The spell book opens minimized. The talents tab can't be minimized, so the window must be
 -- maximized before the switch, or the switch restarts the window on its spell book page.
 Test("below the talent level with the spell book minimized, the talents tab still opens", function()

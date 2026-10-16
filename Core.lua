@@ -2589,6 +2589,10 @@ local function ShowTalentsTab(window)
 	if window:GetTab() ~= window.talentTabID then
 		window:SetTab(window.talentTabID)
 	end
+	-- Minimizing was off for the open. The game turns it back on after a size change too.
+	if not window.isMinimizingEnabled then
+		window:SetMinimizingEnabled(true)
+	end
 	-- The tree may still be on the plan's tab from an earlier open: put the game's tree back.
 	local talents = window.TalentsFrame
 	if talents.calculatorMode then
@@ -2760,11 +2764,25 @@ local function InstallBelowLevel()
 		if PlayerSpellsFrame:IsShown() then
 			ShowTalentsTab(PlayerSpellsFrame)
 		else
-			-- Set while hidden, so the game's open code keeps the spell book it finds and does
-			-- not pick another tab. The switch to talents follows in the same open.
+			-- The game's open code keeps a spell book tab and picks it otherwise, and it minimizes
+			-- a spell book. A minimized window would be maximized by the switch to talents, which
+			-- hides and shows it inside its own open. So minimizing is off while the window opens
+			-- on the spell book, as the game's ForceMaximize does, and the switch to talents
+			-- follows in the same open.
+			local window = PlayerSpellsFrame
 			openPending = true
-			PlayerSpellsFrame:SetTab(PlayerSpellsFrame.spellBookTabID)
-			ShowUIPanel(PlayerSpellsFrame)
+			window:SetMinimizingEnabled(false)
+			if window.isMinimized then
+				window:SetMinimized(false)
+			end
+			window:SetTab(window.spellBookTabID)
+			ShowUIPanel(window)
+			-- Normally the open restores it. This covers an open that never reached the hook.
+			C_Timer.After(0, function()
+				if not window.isMinimizingEnabled then
+					window:SetMinimizingEnabled(true)
+				end
+			end)
 		end
 	end)
 	hooksecurefunc(TalentMicroButton, "UpdateMicroButton", EnableLockedTalentButton)
