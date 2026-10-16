@@ -626,6 +626,20 @@ Test("below the talent level the menu button opens the talents tab, not the plan
 	Equal(game.frame.calculatorMode == true, false, "no plan tab")
 end)
 
+-- The spell book opens minimized. The talents tab can't be minimized, so the window must be
+-- maximized before the switch, or the switch restarts the window on its spell book page.
+Test("below the talent level with the spell book minimized, the talents tab still opens", function()
+	local game = NewGame({ belowTalentLevel = true })
+	game:OpenTalentWindow()
+	game:RunTimers()
+	Equal(game:WindowMinimized(), true, "the spell book opened minimized")
+	game:PressTalentButton()
+	game:RunTimers()
+	Equal(game:WindowShown(), true, "window shown")
+	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
+	Equal(game:WindowMinimized(), false, "maximized for the talents tab")
+end)
+
 Test("below the talent level a second click on the menu button closes the talents tab", function()
 	local game = NewGame({ belowTalentLevel = true })
 	game:PressTalentButton()

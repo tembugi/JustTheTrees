@@ -2580,6 +2580,12 @@ local closingWindow = false
 
 local function ShowTalentsTab(window)
 	openPending = false
+	-- The talents tab can't be minimized, and the spell book opens minimized. Switching to the
+	-- talents tab while minimized maximizes the window then, and that restarts it on its spell
+	-- book page. So the window is maximized first, while the spell book is still on screen.
+	if window.isMinimized then
+		window:ForceMaximize()
+	end
 	if window:GetTab() ~= window.talentTabID then
 		window:SetTab(window.talentTabID)
 	end
@@ -2703,8 +2709,8 @@ local function Install(frame)
 			ShowTalentsTab(self)
 		end
 	end)
+	-- The game also hides the window to change its size, so hiding does not cancel a pending switch.
 	PlayerSpellsFrame:HookScript("OnHide", function()
-		openPending = false
 		closingWindow = true
 		C_Timer.After(0, function()
 			closingWindow = false

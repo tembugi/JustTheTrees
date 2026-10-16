@@ -1486,11 +1486,43 @@ return function(options)
 			end
 			return available
 		end
+		-- The window's minimize logic (PlayerSpellsFrameMixin:SetMinimized, ForceMaximize,
+		-- SetTab, DoesTabSupportMinimizedMode, ShouldManuallyMinimize). A change of size hides
+		-- and shows the window, so the spell book's own reset runs again. ASSUMED: the player's
+		-- spellBookMinimize setting is on, so the spell book opens minimized.
+		window.isMinimized = false
+		function window:DoesTabSupportMinimizedMode(tabID)
+			return tabID == self.spellBookTabID
+		end
+		function window:ShouldManuallyMinimize(tabID)
+			return self:DoesTabSupportMinimizedMode(tabID)
+		end
+		function window:SetMinimized(shouldBeMinimized)
+			if self.isMinimized == shouldBeMinimized then
+				return
+			end
+			local wasShown = self:IsShown()
+			if wasShown then
+				self:Hide()
+			end
+			self.isMinimized = shouldBeMinimized
+			if wasShown then
+				self:Show()
+			end
+		end
+		function window:ForceMaximize()
+			self:SetMinimized(false)
+		end
 		function window:SetTab(tabID)
 			TabSystemOwnerMixin.SetTab(self, tabID)
 			self.TalentsFrame:SetShown(tabID == self.talentTabID)
 			self.SpecFrame:SetShown(tabID == self.specTabID)
 			self.SpellBookFrame:SetShown(tabID == self.spellBookTabID)
+			if self.isMinimized and not self:DoesTabSupportMinimizedMode(tabID) then
+				self:ForceMaximize()
+			elseif not self.isMinimized and self:ShouldManuallyMinimize(tabID) then
+				self:SetMinimized(true)
+			end
 			return true
 		end
 		function window:SetToDefaultAvailableTab()
@@ -1672,6 +1704,9 @@ return function(options)
 	end
 	function game:WindowTab()
 		return PlayerSpellsFrame:GetTab()
+	end
+	function game:WindowMinimized()
+		return PlayerSpellsFrame.isMinimized == true
 	end
 	function game:Tab(tabID)
 		return self.frame.TabSystem:GetTabButton(tabID)
