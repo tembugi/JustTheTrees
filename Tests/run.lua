@@ -626,6 +626,16 @@ Test("below the talent level the menu button opens the talents tab, not the plan
 	Equal(game.frame.calculatorMode == true, false, "no plan tab")
 end)
 
+Test("below the talent level a second click on the menu button closes the talents tab", function()
+	local game = NewGame({ belowTalentLevel = true })
+	game:PressTalentButton()
+	game:RunTimers()
+	Equal(game:WindowShown(), true, "window shown after the first click")
+	game:PressTalentButton()
+	game:RunTimers()
+	Equal(game:WindowShown(), false, "closed by the second click")
+end)
+
 Test("below the talent level a click on the menu button while the spell book shows opens the talents tab", function()
 	local game = NewGame({ belowTalentLevel = true })
 	game:OpenTalentWindow()

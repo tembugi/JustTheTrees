@@ -2574,6 +2574,9 @@ end
 -- The window's talents tab is off below the level, but it can still be shown. The tree on
 -- it is the game's own (the spec tab inside it). The plan's tab is turned off here.
 local openPending = false
+-- A toggle that closes the window hides it first. The same press must not open it again, so
+-- the flag lasts only until the next frame.
+local closingWindow = false
 
 local function ShowTalentsTab(window)
 	openPending = false
@@ -2702,6 +2705,10 @@ local function Install(frame)
 	end)
 	PlayerSpellsFrame:HookScript("OnHide", function()
 		openPending = false
+		closingWindow = true
+		C_Timer.After(0, function()
+			closingWindow = false
+		end)
 	end)
 
 	-- Color blind mode marks the talents that can take a point, as in the talent
@@ -2740,7 +2747,7 @@ local function InstallBelowLevel()
 	-- page first, so a window that is opening gets its tab after that page is set.
 	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", function(suggestedTab)
 		if suggestedTab ~= PlayerSpellsUtil.FrameTabs.ClassTalents or not PlayerSpellsFrame
-			or DISALLOW_FRAME_TOGGLING or C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
+			or DISALLOW_FRAME_TOGGLING or closingWindow or C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
 			return
 		end
 		if PlayerSpellsFrame:IsShown() then
