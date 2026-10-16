@@ -2704,9 +2704,14 @@ local function Install(frame)
 		end
 	end)
 	-- Runs after the game's own open code, which picks the spell book below the level.
+	-- The game finishes its own open code after this hook, so the switch waits a frame.
 	PlayerSpellsFrame:HookScript("OnShow", function(self)
 		if openPending then
-			ShowTalentsTab(self)
+			C_Timer.After(0, function()
+				if openPending and self:IsShown() then
+					ShowTalentsTab(self)
+				end
+			end)
 		end
 	end)
 	-- The game also hides the window to change its size, so hiding does not cancel a pending switch.

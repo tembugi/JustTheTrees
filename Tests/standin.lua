@@ -1722,11 +1722,17 @@ return function(options)
 		self:OpenTalentWindow()
 		self:ClickTab(self.frame.calculatorTabID)
 	end
+	-- Runs frames until nothing is waiting. A callback queued by a callback runs in the next frame.
 	function game:RunTimers()
-		local timers = self.timers
-		self.timers = {}
-		for _, callback in ipairs(timers) do
-			callback()
+		for _ = 1, 10 do
+			local timers = self.timers
+			if #timers == 0 then
+				return
+			end
+			self.timers = {}
+			for _, callback in ipairs(timers) do
+				callback()
+			end
 		end
 	end
 	-- A plan button, or one choice of a choice talent.
