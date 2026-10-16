@@ -1510,6 +1510,8 @@ return function(options)
 
 	local function NewTalentsFrame()
 		PlayerSpellsFrame = NewWidget("Frame", UIParent)
+		-- The game's window starts hidden (hidden="true" in Camelot/Blizzard_PlayerSpellsFrame.xml).
+		PlayerSpellsFrame:Hide()
 		local frame = NewWidget("Frame", PlayerSpellsFrame)
 		PlayerSpellsFrame.TalentsFrame = frame
 		SetUpPlayerSpellsFrame(PlayerSpellsFrame)
@@ -1568,8 +1570,12 @@ return function(options)
 	}
 	DISALLOW_FRAME_TOGGLING = false
 	MICRO_BUTTONS_DISABLED = false
+	-- ASSUMED: the game shows the window a frame after the call. In the game, the first open
+	-- after login ends on the spell book tab even though the plan's tab was set during the call.
 	function ShowUIPanel(frame)
-		frame:Show()
+		C_Timer.After(0, function()
+			frame:Show()
+		end)
 	end
 	function HideUIPanel(frame)
 		frame:Hide()

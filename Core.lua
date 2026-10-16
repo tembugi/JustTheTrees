@@ -2580,6 +2580,8 @@ end
 -- so the window does not open. The plan never uses the character's talents, so it opens
 -- anyway. Each hook runs after the game's own function, which stays in place.
 local closingWindow = false
+-- The plan's tab is wanted the next time the window shows. Set when the plan is opened.
+local planPending = false
 
 -- The game's own test for the talent tab (PlayerSpellsFrame:IsTabAvailable), read without
 -- the window, which loads on first use. Inspecting keeps the tab open, as the game does.
@@ -2603,24 +2605,34 @@ local function ShowPlanTab(frame)
 	end
 end
 
+-- Selects the talents tab and the plan. Called once the window is on screen, after the
+-- game's own open code: that code picks the spell book, the only tab the game leaves open
+-- here, so the switch must come after it.
+local function SelectPlan(window)
+	planPending = false
+	if window:GetTab() ~= window.talentTabID then
+		window:SetTab(window.talentTabID)
+	end
+	ShowPlanTab(window.TalentsFrame)
+end
+
 local function OpenPlanBelowLevel()
 	-- The game's toggle loads the window before this runs, so it exists here.
 	local window = PlayerSpellsFrame
 	if not window or DISALLOW_FRAME_TOGGLING or closingWindow or not TalentTabLocked() then
 		return
 	end
-	local frame = window.TalentsFrame
-	if not frame.calculatorTabID then
+	if not window.TalentsFrame.calculatorTabID then
 		return
 	end
+	planPending = true
 	if not window:IsShown() then
 		ShowUIPanel(window)
 	end
-	-- Showing the window selects the spell book, the only tab the game leaves open here.
-	if window:GetTab() ~= window.talentTabID then
-		window:SetTab(window.talentTabID)
+	-- The window may show a frame later. Then the OnShow hook selects the plan.
+	if window:IsShown() then
+		SelectPlan(window)
 	end
-	ShowPlanTab(frame)
 end
 
 -- The game disables the menu button below the level. It stays clickable while the tab
@@ -2750,7 +2762,15 @@ local function Install(frame)
 			ShowPlan(self)
 		end
 	end)
-	PlayerSpellsFrame:HookScript("OnHide", MarkClosing)
+	PlayerSpellsFrame:HookScript("OnShow", function(self)
+		if planPending then
+			SelectPlan(self)
+		end
+	end)
+	PlayerSpellsFrame:HookScript("OnHide", function()
+		planPending = false
+		MarkClosing()
+	end)
 
 	-- Color blind mode marks the talents that can take a point, as in the talent
 	-- window's own UpdateColorBlindModeUI. Watched with CVAR_UPDATE on the addon's own
