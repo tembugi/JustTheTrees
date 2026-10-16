@@ -1434,87 +1434,10 @@ return function(options)
 		end
 	end
 
-	-- Blizzard_PlayerSpellsFrame.lua (Camelot): the window's three tabs. The talent tab is off
-	-- when the talent UI is not available (IsTabAvailable), and the window then opens on the
-	-- spell book. ASSUMED: the spec tab is off at every level, and the spell book is always on.
-	PlayerSpellsUtil = {
-		FrameTabs = { ClassSpecializations = "specializations", ClassTalents = "talents", SpellBook = "spellBook" },
-	}
-	local function SetUpPlayerSpellsFrame(window)
-		Mixin(window, TabSystemOwnerMixin)
-		window:OnLoad()
-		window.TabSystem = Mixin(NewWidget("Frame", window), TabSystemMixin)
-		window.TabSystem.tabs = {}
-		window:SetTabSystem(window.TabSystem)
-		window.specTabID = window:AddNamedTab("Specialization")
-		window.talentTabID = window:AddNamedTab("Talents")
-		window.spellBookTabID = window:AddNamedTab("Spell Book")
-		window.frameTabsToTabID = {
-			[PlayerSpellsUtil.FrameTabs.ClassSpecializations] = window.specTabID,
-			[PlayerSpellsUtil.FrameTabs.ClassTalents] = window.talentTabID,
-			[PlayerSpellsUtil.FrameTabs.SpellBook] = window.spellBookTabID,
-		}
-		window.SpecFrame = NewWidget("Frame", window)
-		window.SpellBookFrame = NewWidget("Frame", window)
-		function window:IsInspecting()
-			return self.TalentsFrame:IsInspecting()
-		end
-		function window:IsTabAvailable(tabID)
-			if tabID == self.talentTabID then
-				return self:IsInspecting() or PlayerUtil.CanUseClassTalents()
-			elseif tabID == self.specTabID then
-				return false
-			end
-			return true
-		end
-		function window:IsFrameTabActive(frameTab)
-			return self:GetTab() == self.frameTabsToTabID[frameTab]
-		end
-		function window:TrySetTab(frameTab)
-			local tabID = self.frameTabsToTabID[frameTab]
-			if not tabID then
-				return false
-			end
-			local available = self:IsTabAvailable(tabID)
-			if available then
-				self:SetTab(tabID)
-			end
-			return available
-		end
-		function window:SetTab(tabID)
-			TabSystemOwnerMixin.SetTab(self, tabID)
-			self.TalentsFrame:SetShown(tabID == self.talentTabID)
-			self.SpecFrame:SetShown(tabID == self.specTabID)
-			self.SpellBookFrame:SetShown(tabID == self.spellBookTabID)
-			return true
-		end
-		function window:SetToDefaultAvailableTab()
-			if self:IsTabAvailable(self.talentTabID) then
-				self:SetTab(self.talentTabID)
-			elseif self:IsTabAvailable(self.specTabID) then
-				self:SetTab(self.specTabID)
-			else
-				self:SetTab(self.spellBookTabID)
-			end
-		end
-		function window:UpdateTabs()
-			local current = self:GetTab()
-			if not current or not self:IsTabAvailable(current) then
-				self:SetToDefaultAvailableTab()
-			end
-		end
-		window:SetScript("OnShow", function(self)
-			self:UpdateTabs()
-		end)
-	end
-
 	local function NewTalentsFrame()
 		PlayerSpellsFrame = NewWidget("Frame", UIParent)
-		-- The game's window starts hidden (hidden="true" in Camelot/Blizzard_PlayerSpellsFrame.xml).
-		PlayerSpellsFrame:Hide()
 		local frame = NewWidget("Frame", PlayerSpellsFrame)
 		PlayerSpellsFrame.TalentsFrame = frame
-		SetUpPlayerSpellsFrame(PlayerSpellsFrame)
 		Mixin(frame, TabSystemOwnerMixin, TalentFrameMixin)
 		frame.buttonSize = 40
 		frame.basePanOffsetX, frame.basePanOffsetY, frame.panOffsetX, frame.panOffsetY = 0, 0, 0, 0
@@ -1560,72 +1483,6 @@ return function(options)
 		return frame
 	end
 
-	-- The talent UI's level. ASSUMED: PlayerUtil.CanUseClassTalents (the talent tab's test)
-	-- is true from the talent level, and the menu button follows it (HasPlayerEarnedATalentPoint).
-	game.belowTalentLevel = options.belowTalentLevel == true
-	PlayerUtil = {
-		CanUseClassTalents = function()
-			return not game.belowTalentLevel
-		end,
-	}
-	DISALLOW_FRAME_TOGGLING = false
-	MICRO_BUTTONS_DISABLED = false
-	-- ASSUMED: the game shows the window a frame after the call. In the game, the first open
-	-- after login ends on the spell book tab even though the plan's tab was set during the call.
-	function ShowUIPanel(frame)
-		C_Timer.After(0, function()
-			frame:Show()
-		end)
-	end
-	function HideUIPanel(frame)
-		frame:Hide()
-	end
-	function CheckLoadPlayerSpellsFrame()
-		if not game.loadedAddOns["Blizzard_PlayerSpells"] then
-			game.frame = NewTalentsFrame()
-			AddOnLoaded("Blizzard_PlayerSpells")
-		end
-	end
-	-- PlayerSpellsUtil.TogglePlayerSpellsFrame and ToggleClassTalentOrSpecFrame, as the game
-	-- has them (FrameXMLUtil/Mainline/PlayerSpellsUtil.lua).
-	function PlayerSpellsUtil.TogglePlayerSpellsFrame(suggestedTab)
-		if DISALLOW_FRAME_TOGGLING then
-			return false
-		end
-		CheckLoadPlayerSpellsFrame()
-		local alreadyShowing = PlayerSpellsFrame:IsShown()
-			and (not suggestedTab or PlayerSpellsFrame:IsFrameTabActive(suggestedTab))
-		if alreadyShowing then
-			HideUIPanel(PlayerSpellsFrame)
-		else
-			if suggestedTab and not PlayerSpellsFrame:TrySetTab(suggestedTab) then
-				return false
-			end
-			ShowUIPanel(PlayerSpellsFrame)
-		end
-		return true
-	end
-	function PlayerSpellsUtil.ToggleClassTalentOrSpecFrame()
-		if not PlayerSpellsUtil.TogglePlayerSpellsFrame(PlayerSpellsUtil.FrameTabs.ClassTalents) then
-			PlayerSpellsUtil.TogglePlayerSpellsFrame(PlayerSpellsUtil.FrameTabs.ClassSpecializations)
-		end
-	end
-	-- The menu button (Blizzard_MicroMenu, always loaded). Its talents part is disabled
-	-- until the talent level, and a click toggles the talent tab (OnClick in
-	-- PlayerSpellsMicroButtonMixin).
-	TalentMicroButton = NewWidget("Button", UIParent)
-	function TalentMicroButton:UpdateMicroButton()
-		if game.belowTalentLevel then
-			self:Disable()
-		else
-			self:Enable()
-		end
-	end
-	TalentMicroButton:SetScript("OnClick", function()
-		PlayerSpellsUtil.TogglePlayerSpellsFrame(PlayerSpellsUtil.FrameTabs.ClassTalents)
-	end)
-	TalentMicroButton:UpdateMicroButton()
-
 	----------------------------------------------------------------------------
 	-- Playing
 	----------------------------------------------------------------------------
@@ -1652,21 +1509,6 @@ return function(options)
 	end
 	function game:CloseTalentWindow()
 		PlayerSpellsFrame:Hide()
-	end
-	-- The talent hotkey (TOGGLETALENTS in Bindings_Camelot.xml) and the menu button.
-	function game:PressTalentKey()
-		PlayerSpellsUtil.ToggleClassTalentOrSpecFrame()
-	end
-	function game:PressTalentButton()
-		if TalentMicroButton:IsEnabled() then
-			TalentMicroButton.scripts.OnClick(TalentMicroButton, "LeftButton")
-		end
-	end
-	function game:WindowShown()
-		return PlayerSpellsFrame ~= nil and PlayerSpellsFrame:IsShown()
-	end
-	function game:WindowTab()
-		return PlayerSpellsFrame:GetTab()
 	end
 	function game:Tab(tabID)
 		return self.frame.TabSystem:GetTabButton(tabID)

@@ -32,12 +32,6 @@ local function Load(saved)
 	function C_AddOns.IsAddOnLoaded()
 		return false, false
 	end
-	-- The base UI the addon hooks at login (the talent hotkey, the menu button). These
-	-- tests don't play it, so the hooks only have to exist; the window's tests play them.
-	function hooksecurefunc() end
-	PlayerUtil = { CanUseClassTalents = function() return true end }
-	PlayerSpellsUtil = { FrameTabs = { ClassTalents = "talents" } }
-	TalentMicroButton = { Enable = function() end }
 	JustTheTreesDB = saved
 	assert(loadfile("Core.lua"))(ADDON_NAME, {})
 	frame:OnEvent("ADDON_LOADED", ADDON_NAME)
@@ -612,53 +606,6 @@ Test("closing and opening the window keeps the plan on screen", function()
 	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "tab")
 	Equal(game:Ranks(A1), 3, "A1")
 	Equal(game:GamePiecesShown(), 0, "the game's pieces")
-end)
-
-Test("below the talent level the talent hotkey still opens the plan", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:PressTalentKey()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
-	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "plan tab")
-	Spend(game, { A1, 1 })
-	Equal(game:Ranks(A1), 1, "a point in the plan")
-end)
-
-Test("below the talent level the menu button opens the plan, and a second press closes it", function()
-	local game = NewGame({ belowTalentLevel = true })
-	Equal(TalentMicroButton:IsEnabled(), true, "button enabled")
-	game:PressTalentButton()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "plan tab")
-	game:RunTimers()
-	game:PressTalentButton()
-	Equal(game:WindowShown(), false, "closed by the second press")
-	game:RunTimers()
-	game:PressTalentKey()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "the hotkey opens it again")
-end)
-
--- The first click after login loads the talent window. The game's own open code can end on
--- the spell book tab after the plan's tab was set, so the plan must still show.
-Test("below the talent level the first click on the menu button shows the plan", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:PressTalentButton()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab, not the spell book")
-	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "plan tab")
-end)
-
-Test("the talent hotkey opens the window on the talents tab when the level allows it", function()
-	local game = NewGame()
-	game:PressTalentKey()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
-	Equal(game.frame.calculatorMode == true, false, "the plan is not forced open")
 end)
 
 Test("shift-click puts the talent's link in chat", function()
