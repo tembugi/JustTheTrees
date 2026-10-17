@@ -12,7 +12,7 @@ if api.Region.inherits[1] == "Region" then
 end
 
 -- The widget types the addon and the stand-in make.
-local TYPES = { "Frame", "Button", "Texture", "FontString", "Line", "AnimationGroup", "Alpha" }
+local TYPES = { "Frame", "Button", "Texture", "MaskTexture", "FontString", "Line", "AnimationGroup", "Alpha", "Scale", "ModelScene" }
 
 local function Collect(widgetType, set, seen)
 	if seen[widgetType] then
@@ -30,7 +30,7 @@ end
 
 local out = {
 	"-- The methods each widget type has in Forever, from Ketho/BlizzardInterfaceResources (forever,",
-	"-- 1.60.1 build 70009) Resources/WidgetAPI.lua, with the methods each type inherits. That file",
+	"-- 1.60.1 build 70338) Resources/WidgetAPI.lua, with the methods each type inherits. That file",
 	"-- lists Region as inheriting itself; its WidgetHierarchy.png puts Region after ScriptRegion, so",
 	"-- Region takes ScriptRegion's methods here.",
 	"-- The stand-in's widgets have only these: calling any other method fails, as in the game.",

@@ -2387,6 +2387,147 @@ function NodeClick(button, mouseButton)
 end
 
 --------------------------------------------------------------------------------
+-- The apply effect
+--------------------------------------------------------------------------------
+
+-- What the game shows as it applies talent changes (ClassTalentsFrameMixin and
+-- TalentFrameBaseMixin:SetCommitCompleteVisualsActive): its class flash over the tree
+-- (commitFlashAnims), the background flash (BackgroundFlashAnim) and, a moment later, a spark on
+-- each newly learned talent (PlayPurchaseCompleteEffect) with the completion sound. Rebuilt on the
+-- addon's own textures and model scene from Camelot's Blizzard_ClassTalentsFrame.xml and
+-- Blizzard_SharedTalentFrame.xml: the game's own run the game's code when played.
+local PURCHASE_FX_DELAY = 1.2 -- PurchaseFXDelay
+local NODE_PURCHASE_COMPLETE_FX = 150 -- NODE_PURCHASE_COMPLETE_FX_1
+local DEFAULT_CLASS_FX = "talents-animations-class-druid" -- the XML's atlas, kept when a class has none
+local MASK_WRAP = "CLAMPTOBLACKADDITIVE"
+
+local function AddAlpha(group, target, duration, fromAlpha, toAlpha, smoothing)
+	local anim = group:CreateAnimation("Alpha")
+	anim:SetTarget(target)
+	anim:SetDuration(duration)
+	anim:SetFromAlpha(fromAlpha)
+	anim:SetToAlpha(toAlpha)
+	if smoothing then
+		anim:SetSmoothing(smoothing)
+	end
+end
+
+local function AddScale(group, target, duration, fromScale, toScale, smoothing)
+	local anim = group:CreateAnimation("Scale")
+	anim:SetTarget(target)
+	anim:SetDuration(duration)
+	anim:SetScaleFrom(fromScale, fromScale)
+	anim:SetScaleTo(toScale, toScale)
+	if smoothing then
+		anim:SetSmoothing(smoothing)
+	end
+end
+
+local function CreateApplyEffect(frame)
+	-- Over the game's see-through tree and its shield, under the plan's board, as the game draws
+	-- these in its background layer under its talents.
+	local holder = CreateFrame("Frame", nil, frame)
+	holder:SetAllPoints(frame)
+	holder:SetFrameLevel(frame.ButtonsParent:GetFrameLevel() + TREE_LEVEL - 5)
+	local background = frame.ClassBackground
+	local function FxTexture(atlas, useAtlasSize)
+		local texture = holder:CreateTexture(nil, "BACKGROUND", nil, 3)
+		texture:SetAtlas(atlas, useAtlasSize)
+		texture:SetBlendMode("ADD")
+		texture:SetAlpha(0)
+		return texture
+	end
+	local function Mask(atlas)
+		local mask = holder:CreateMaskTexture()
+		mask:SetAtlas(atlas, false, nil, nil, MASK_WRAP, MASK_WRAP)
+		return mask
+	end
+
+	local visuals = ClassTalentUtil.GetVisualsForClassID(select(3, UnitClass("player")))
+	local classFx = visuals and visuals.activationFX
+	if not (classFx and C_Texture.GetAtlasInfo(classFx)) then
+		classFx = DEFAULT_CLASS_FX
+	end
+	local expand = FxTexture("talents-animations-gridburst", false)
+	expand:SetSize(320, 320)
+	expand:SetPoint("CENTER", background, "CENTER")
+	local filigree = Mask("talents-animations-mask-filigree-activate")
+	filigree:SetPoint("TOPLEFT", background, "TOPLEFT")
+	expand:AddMaskTexture(filigree)
+	local class1 = FxTexture(classFx, true)
+	class1:SetPoint("CENTER", background, "CENTER")
+	local class2, class3, class4 = FxTexture(classFx, true), FxTexture(classFx, true), FxTexture(classFx, true)
+	for _, texture in ipairs({ class2, class3, class4 }) do
+		texture:SetPoint("CENTER", class1, "CENTER")
+	end
+	local titans = FxTexture("talents-animations-titans", true)
+	titans:SetPoint("CENTER", background, "CENTER", 100, -18)
+	local full = Mask("talents-animations-mask-full")
+	full:SetPoint("TOPLEFT", background, "TOPLEFT")
+	full:SetPoint("BOTTOMRIGHT", background, "BOTTOMRIGHT")
+	for _, texture in ipairs({ titans, expand, class3, class4 }) do
+		texture:AddMaskTexture(full)
+	end
+	local flash = FxTexture("spec-background", false)
+	flash:SetPoint("TOPLEFT", frame.ButtonsParent, "TOPLEFT")
+	flash:SetPoint("BOTTOMRIGHT", frame.ButtonsParent, "BOTTOMRIGHT")
+
+	local commit = holder:CreateAnimationGroup()
+	commit:SetToFinalAlpha(true)
+	AddScale(commit, expand, 1.4, 1, 20, "IN")
+	AddAlpha(commit, expand, 1.4, 0.65, 0, "IN")
+	AddAlpha(commit, class1, 1.2, 1, 0, "OUT")
+	AddAlpha(commit, class2, 1.2, 1, 0, "OUT")
+	AddAlpha(commit, class3, 0.3, 0.3, 0, "OUT")
+	AddAlpha(commit, class4, 0.5, 0.2, 0, "OUT")
+	AddScale(commit, class3, 0.3, 1, 1.5)
+	AddScale(commit, class4, 0.5, 1, 1.5)
+	AddAlpha(commit, titans, 1, 0.7, 0, "IN")
+	AddScale(commit, titans, 2, 1.3, 1.2)
+	local backgroundFlash = holder:CreateAnimationGroup()
+	backgroundFlash:SetToFinalAlpha(true)
+	AddAlpha(backgroundFlash, flash, 1.2, 1, 0, "IN")
+
+	-- The talents' sparks, in a model scene like the game's FxModelScene.
+	local scene = CreateFrame("ModelScene", nil, frame, "ScriptAnimatedModelSceneTemplate")
+	scene:SetFrameStrata("HIGH")
+	scene:SetFrameLevel(4000)
+	scene:SetPoint("TOPLEFT", frame.ButtonsParent, "TOPLEFT")
+	scene:SetPoint("BOTTOMRIGHT", frame.ButtonsParent, "BOTTOMRIGHT")
+
+	frame.calculatorApplyEffect = { commit = commit, backgroundFlash = backgroundFlash, scene = scene }
+end
+
+-- Plays the effect for a plan just saved; nodeIDs are the talents it learned since the last save.
+local function PlayApplyEffect(frame, nodeIDs)
+	if not frame:IsVisible() then
+		return
+	end
+	if not frame.calculatorApplyEffect then
+		CreateApplyEffect(frame)
+	end
+	local effect = frame.calculatorApplyEffect
+	effect.commit:Restart()
+	effect.backgroundFlash:Restart()
+	if #nodeIDs == 0 then
+		return
+	end
+	C_Timer.After(PURCHASE_FX_DELAY, Guard(function()
+		if not ShowingCalculator(frame) or not frame:IsVisible() then
+			return
+		end
+		for _, nodeID in ipairs(nodeIDs) do
+			local button = frame.calculatorNodes and frame.calculatorNodes[nodeID]
+			if button and button:IsVisible() then
+				-- TalentButtonArtMixin:InternalPlayAnimEffects's scale.
+				effect.scene:AddEffect(NODE_PURCHASE_COMPLETE_FX, button, button, nil, nil, button:GetEffectiveScale() / effect.scene:GetEffectiveScale())
+			end
+		end
+		PlaySound(SOUNDKIT.UI_CLASS_TALENT_APPLY_COMPLETE)
+	end))
+end
+
+--------------------------------------------------------------------------------
 -- Save, Load Saved, Clear and the slot menu
 --------------------------------------------------------------------------------
 
@@ -2396,6 +2537,15 @@ local function SaveBuild(frame)
 	if not build then
 		SayFailed("Couldn't save: your character isn't fully loaded yet. Try again in a moment.")
 		return
+	end
+	-- The talents learned since the last save: new, more ranks, or another choice.
+	local saved = SavedRanks(ns.slot or 1) or {}
+	local learned = {}
+	for nodeID, stored in pairs(ns.ranks) do
+		local before = saved[nodeID]
+		if not before or stored.ranks > before.ranks or stored.entryID ~= before.entryID then
+			learned[#learned + 1] = nodeID
+		end
 	end
 	for key in pairs(build) do
 		build[key] = nil
@@ -2413,6 +2563,7 @@ local function SaveBuild(frame)
 	UpdatePlanButtons(frame)
 	-- The sound the game plays as it applies talent changes (commitSound).
 	PlaySound(SOUNDKIT.UI_CLASS_TALENT_APPLY_CHANGES)
+	PlayApplyEffect(frame, learned)
 	Say(string.format("%s plan saved (%d/%d points).", SlotText(ns.slot or 1), TotalSpent(), PLAN_BUDGET))
 end
 
@@ -2858,10 +3009,10 @@ local TALENT_FRAME_FUNCTIONS = {
 }
 local TALENT_FRAME_PARTS = {
 	"TabSystem", "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec", "DisabledOverlay",
-	"ClassCurrencyDisplay", "BackgroundBorder", "Background", "ButtonsParent",
+	"ClassCurrencyDisplay", "BackgroundBorder", "Background", "ClassBackground", "ButtonsParent",
 }
 -- The game's templates the plan's pieces are made from.
-local TEMPLATES = { "ClassTalentsFrameTabTemplate", "IconButtonTemplate", "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
+local TEMPLATES = { "ClassTalentsFrameTabTemplate", "IconButtonTemplate", "ScriptAnimatedModelSceneTemplate", "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
 
 local function HasTalentFramePieces(frame)
 	return HasFunctions(frame, TALENT_FRAME_FUNCTIONS) and HasTables(frame, TALENT_FRAME_PARTS)
@@ -2883,7 +3034,9 @@ local function HasTalentWindowPieces()
 		and HasFunctions(TalentUtil, { "GetTalentName" }) and HasFunctions(ClassTalentUtil, { "GetSpendSoundKitID" })
 		and type(TALENT_FRAME_APPLY_BUTTON_TEXT) == "string" and type(TALENT_FRAME_DISCARD_CHANGES_BUTTON_TOOLTIP) == "string"
 		and HasTables(_G, { "SOUNDKIT" }) and SOUNDKIT.UI_CLASS_TALENT_NODE_REFUND and SOUNDKIT.UI_CLASS_TALENT_APPLY_CHANGES
-		and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON and HasFunctions(SpellSearchUtil, { "IsActionBarMatchType" }))
+		and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON and SOUNDKIT.UI_CLASS_TALENT_APPLY_COMPLETE
+		and HasFunctions(ClassTalentUtil, { "GetVisualsForClassID" }) and HasFunctions(C_Texture, { "GetAtlasInfo" })
+		and HasFunctions(SpellSearchUtil, { "IsActionBarMatchType" }))
 	then
 		return false
 	end

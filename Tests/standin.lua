@@ -337,6 +337,9 @@ function Widget:CreateFontString(_, _, template)
 	text.fontObject = template
 	return text
 end
+function Widget:CreateMaskTexture()
+	return NewWidget("MaskTexture", self)
+end
 function Widget:CreateLine()
 	return NewWidget("Line", self)
 end
@@ -347,11 +350,19 @@ function Widget:CreateAnimationGroup(_, template)
 	return NewWidget("AnimationGroup", self)
 end
 function Widget:CreateAnimation(animationType)
-	assert(animationType == "Alpha", "only Alpha animations are in the stand-in")
-	return NewWidget("Alpha", self)
+	assert(animationType == "Alpha" or animationType == "Scale", "only Alpha and Scale animations are in the stand-in")
+	return NewWidget(animationType, self)
 end
 function Widget:Play()
 	self.playing = true
+end
+function Widget:Restart()
+	self.playing = true
+	self.restarts = (self.restarts or 0) + 1
+end
+-- ASSUMED: nothing is scaled; the addon only divides one scale by another.
+function Widget:GetEffectiveScale()
+	return 1
 end
 function Widget:Stop()
 	self.playing = false
@@ -508,6 +519,7 @@ return function(options)
 		taints = {},
 		addonDepth = 0,
 		sounds = {},
+		effects = {},
 		writes = {},
 		timers = {},
 		cvars = {},
@@ -747,6 +759,19 @@ return function(options)
 	ClassTalentUtil = {}
 	function ClassTalentUtil.GetSpendSoundKitID(entryType)
 		return entryType == "major" and SOUNDKIT.UI_CLASS_TALENT_NODE_SPEND_MAJOR or SOUNDKIT.UI_CLASS_TALENT_NODE_SPEND
+	end
+	SOUNDKIT.UI_CLASS_TALENT_APPLY_COMPLETE = 5
+	-- ClassTalentUtil.GetVisualsForClassID and C_Texture.GetAtlasInfo. ASSUMED: the class's visuals
+	-- and that every atlas exists; the addon only passes them on.
+	function ClassTalentUtil.GetVisualsForClassID()
+		return { activationFX = "talents-animations-class-paladin" }
+	end
+	C_Texture = {}
+	function C_Texture.GetAtlasInfo(atlas)
+		return { atlas = atlas }
+	end
+	function UnitClass()
+		return "Paladin", "PALADIN", 2
 	end
 	TALENT_FRAME_APPLY_BUTTON_TEXT = "Apply Changes"
 	TALENT_FRAME_DISCARD_CHANGES_BUTTON_TOOLTIP = "Undo Pending Changes"
@@ -1170,6 +1195,13 @@ return function(options)
 			frame.GateText:Hide()
 		end,
 		UIPanelButtonNoTooltipTemplate = function() end,
+		-- ScriptAnimatedModelSceneTemplate (ScriptAnimatedModelScene.xml). ASSUMED: AddEffect only
+		-- records the effect; the stand-in draws no models.
+		ScriptAnimatedModelSceneTemplate = function(scene)
+			function scene:AddEffect(effectID, source)
+				game.effects[#game.effects + 1] = { effectID = effectID, source = source }
+			end
+		end,
 		-- IconButtonTemplate (IconButtonTemplate.xml): its Icon, set up from no keys.
 		IconButtonTemplate = function(frame)
 			frame.Icon = frame:CreateTexture()
@@ -1816,6 +1848,7 @@ return function(options)
 		frame.ClassCurrencyDisplay = display
 		frame.BackgroundBorder = NewWidget("Frame", frame)
 		frame.Background = frame:CreateTexture()
+		frame.ClassBackground = frame:CreateTexture()
 		frame.ApplyButton = NewWidget("Button", frame)
 		frame.UndoButton = NewWidget("Button", frame)
 		frame.ResetButton = NewWidget("Button", frame)
