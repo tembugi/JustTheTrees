@@ -7,7 +7,7 @@
 --     Blizzard_SharedTalentButtonTemplates (the search mark), Blizzard_SharedTalentFrame.lua,
 --     Blizzard_SharedTalentFrameTemplates.xml (the gate) and Camelot/Blizzard_SharedTalentOverrides.lua
 --   Blizzard_PlayerSpells: Camelot/ClassTalents/Blizzard_ClassTalentsFrame.lua
---   Blizzard_SharedXML: TabSystemOwner.lua, TabSystemTemplates.lua, MathUtil.lua
+--   Blizzard_SharedXML: TabSystemOwner.lua, TabSystemTemplates.lua, LayoutFrame.lua (MarkDirty), MathUtil.lua
 --   Blizzard_SpellSearch: Blizzard_SpellSearchUtil.lua
 -- Strings are from BlizzardInterfaceResources (enUS), and the widgets have only the methods
 -- Forever's widgets have (Tests/WidgetAPI.lua). The tree's data is made up: Forever's trees come
@@ -1072,6 +1072,14 @@ return function(options)
 		UIPanelButtonNoTooltipTemplate = function() end,
 		WowStyle1DropdownTemplate = function() end,
 	}
+	-- Nothing for a template the game doesn't have (XMLUtilDocumentation.lua: MayReturnNothing).
+	-- ASSUMED: the info's fields; the addon only checks that there is one.
+	C_XMLUtil = {}
+	function C_XMLUtil.GetTemplateInfo(name)
+		if TEMPLATES[name] then
+			return { type = "Frame" }
+		end
+	end
 
 	function CreateFrame(frameType, _, parent, template)
 		local widgetType = frameType == "DropdownButton" and "Button" or frameType
@@ -1239,8 +1247,20 @@ return function(options)
 			tab:SetTabSelected(tab:GetTabID() == tabID)
 		end
 	end
+	-- BaseLayoutMixin:MarkDirty (LayoutFrame.lua), cut to its flag: the stand-in lays out no tabs.
+	function TabSystemMixin:MarkDirty()
+		self.dirty = true
+	end
+	function TabSystemMixin:SetTabShown(tabID, isShown)
+		self.tabs[tabID]:SetShown(isShown)
+		self:MarkDirty()
+	end
+	function TabSystemMixin:IsTabShown(tabID)
+		return self.tabs[tabID]:IsShown()
+	end
 	function TabSystemMixin:SetTabEnabled(tabID, enabled, errorReason)
 		self.tabs[tabID]:SetTabEnabled(enabled, errorReason)
+		self:MarkDirty()
 	end
 	function TabSystemMixin:GetTabButton(tabID)
 		return self.tabs[tabID]
@@ -1390,6 +1410,10 @@ return function(options)
 	function TalentFrameMixin:SetDisabledOverlayShown(shown)
 		self.DisabledOverlay:SetShown(shown)
 	end
+	-- ClassTalentsFrameMixin:HideSpecChangeElements, without the spec switch cast bar.
+	function TalentFrameMixin:HideSpecChangeElements()
+		self:SetDisabledOverlayShown(false)
+	end
 	-- ASSUMED: inspecting is set by the tests before this runs.
 	function TalentFrameMixin:UpdateInspecting() end
 	function TalentFrameMixin:HandlePlayerTalentUpdate()
@@ -1429,11 +1453,17 @@ return function(options)
 			self.TabSystem:GetTabButton(tabID):SetIsActive(activeTab == tabID)
 		end
 	end
+	-- ClassTalentsFrameMixin:SetTab, without the active spec's glow.
 	function TalentFrameMixin:SetTab(tabID)
+		-- Switching tabs loads the player's own config over the inspected one.
+		if self:IsInspecting() then
+			return
+		end
 		TabSystemOwnerMixin.SetTab(self, tabID)
 		local configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(tabID)
 		if configID then
 			self:SetConfigID(configID)
+			self:HideSpecChangeElements()
 		else
 			self:SetDisabledOverlayShown(true)
 		end
@@ -1611,6 +1641,10 @@ return function(options)
 		frame.TabSystem = Mixin(NewWidget("Frame", frame), TabSystemMixin)
 		frame.TabSystem.tabs = {}
 		frame:InitializeTabSystem()
+		-- A test can take a piece away, as a later patch might.
+		if options.changeTalentWindow then
+			options.changeTalentWindow(frame)
+		end
 		return frame
 	end
 
@@ -1688,6 +1722,10 @@ return function(options)
 	if options.talentWindowFirst then
 		game.frame = NewTalentsFrame()
 		AddOnLoaded("Blizzard_PlayerSpells")
+	end
+	-- A test can take a piece of the game away before the addon loads.
+	if options.changeGame then
+		options.changeGame()
 	end
 	JustTheTreesDB = options.saved
 	game.ns = {}

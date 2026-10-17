@@ -1,46 +1,25 @@
 -- Tests for Core.lua: `luajit Tests/run.lua` in the addon folder. Exits non-zero when a test fails.
 --
 -- Every function in the addon is local to its file, so each test loads the unchanged file and
--- watches what it does. The saved-plan tests need only two pieces of the game, copied from
--- wow-ui-source (forever, 1.60.1): Enum.TraitEdgeType (TraitConstantsDocumentation.lua) and a
--- frame's ADDON_LOADED event, with C_AddOns.IsAddOnLoaded. The plan tests play the addon in
--- Tests/standin.lua, a stand-in for Forever's talent window with a small made-up class tree.
+-- watches what it does, in Tests/standin.lua: a stand-in for Forever's talent window with a small
+-- made-up class tree. The saved-plan tests load the addon there with saved plans; the plan tests
+-- use the plan through its own buttons, as a player does.
 
 -- This file runs under luajit, outside the game, and uses standard Lua's loadfile and io, which
 -- the game doesn't have.
 ---@diagnostic disable: undefined-global, lowercase-global
 
-local ADDON_NAME = "JustTheTrees"
 local SOURCE = assert(io.open("Core.lua")):read("*a")
+local VERSION = SOURCE:match('\nlocal VERSION = "([^"]+)"')
 local PLAN_BUDGET = 51
+
+local NewGame = dofile("Tests/standin.lua")
 
 -- Loads the addon with these saved plans, as the game does: the saved variables are set before
 -- the addon's ADDON_LOADED. Returns the saved plans after the addon has cleaned them.
 local function Load(saved)
-	Enum = { TraitEdgeType = { VisualOnly = 0, DeprecatedRankConnection = 1, SufficientForAvailability = 2, RequiredForAvailability = 3, MutuallyExclusive = 4, DeprecatedSelectionOption = 5 } }
-	-- The addon's frame gets its ADDON_LOADED after the file has run; the talent window isn't
-	-- loaded in these tests.
-	local frame = {}
-	function CreateFrame()
-		return frame
-	end
-	function frame:RegisterEvent() end
-	function frame:SetScript(name, func)
-		self[name] = func
-	end
-	C_AddOns = {}
-	function C_AddOns.IsAddOnLoaded()
-		return false, false
-	end
-	-- The base UI the addon hooks at login (the talent window's toggle and the menu button).
-	-- These tests don't play it, so the hooks only have to exist.
-	function hooksecurefunc() end
-	C_SpecializationInfo = { HasPlayerEarnedATalentPoint = function() return true end }
-	PlayerSpellsUtil = { FrameTabs = { ClassTalents = "talents" } }
-	TalentMicroButton = { Enable = function() end }
-	JustTheTreesDB = saved
-	assert(loadfile("Core.lua"))(ADDON_NAME, {})
-	frame:OnEvent("ADDON_LOADED", ADDON_NAME)
+	local game = NewGame({ saved = saved })
+	assert(#game.errors == 0 and #game.chat == 0, "the addon loaded with an error or a chat line")
 	return JustTheTreesDB
 end
 
@@ -95,7 +74,7 @@ end
 
 Test("the version matches the .toc", function()
 	local toc = assert(io.open("JustTheTrees.toc")):read("*a")
-	Equal(SOURCE:match('\nlocal VERSION = "([^"]+)"'), toc:match("## Version: (%S+)"), "VERSION")
+	Equal(VERSION, toc:match("## Version: (%S+)"), "VERSION")
 end)
 
 Test("the budget is one point per level from 10 to 60", function()
@@ -193,8 +172,6 @@ end)
 --------------------------------------------------------------------------------
 -- The plan, played in the stand-in's talent window
 --------------------------------------------------------------------------------
-
-local NewGame = dofile("Tests/standin.lua")
 
 -- The made-up tree (Tests/standin.lua). Tree A: A1-A2 on row 1, A3-A4 row 2, A5-A6 row 3, A7 row
 -- 4, the choice A8 row 5, the capstone A9 row 7. A5 needs A3 maxed. Tree B: B1-B2 row 1, the
@@ -575,24 +552,130 @@ Test("inspecting turns the tab off and hands the window over", function()
 	Equal(game:Ranks(A1), 2, "plan after inspecting")
 end)
 
-Test("if the plan can't be drawn, it says so and shows the character's talents", function()
+local TURNED_OFF = RED_FONT_COLOR:WrapTextInColorCode("The talent plan stopped working and is off.") .. " Type /reload to turn it back on."
+
+local function GameChanged(what)
+	return RED_FONT_COLOR:WrapTextInColorCode("The talent plan is off: " .. what .. " has changed since version " .. VERSION .. ".") .. " Look for an update."
+end
+
+-- The talent window as the game draws it: its own tab and talents, controls and points.
+local function GameWindowBack(game, pieces)
+	Equal(game.frame:GetTab(), game.frame.primarySpecTabID, "tab")
+	Equal(game.frame.calculatorMode, false, "plan mode")
+	Equal(game.frame.calculatorBoard == nil or not game.frame.calculatorBoard:IsShown(), true, "plan hidden")
+	Equal(game:GamePiecesShown(), pieces, "the game's pieces")
+	Equal(game.frame.ApplyButton:IsShown(), true, "Apply")
+	Equal(game.frame.DisabledOverlay:IsShown(), false, "the locked-spec overlay")
+	Equal(game.frame.ClassCurrencyDisplay.CurrentAmountContainer.CurrencyAmount:IsShown(), true, "the character's points")
+	Equal(game:Tab(game.frame.calculatorTabID):IsShown(), false, "the plan's tab")
+end
+
+Test("an error while opening the plan turns it off until /reload: its tab hides, the character's talents come back", function()
 	local game = NewGame()
 	game:OpenTalentWindow()
+	local pieces = game:GamePiecesShown()
 	local entryInfo = C_Traits.GetEntryInfo
 	C_Traits.GetEntryInfo = function()
 		error("entry info failed")
 	end
 	game:ClickTab(game.frame.calculatorTabID)
 	Equal(#game.errors, 1, "errors reported")
-	Equal(LastChat(game):find(RED_FONT_COLOR:WrapTextInColorCode("Couldn't open the plan. Showing your talents instead."), 1, true) ~= nil, true, "chat")
+	Same(game.chat, { NORMAL_FONT_COLOR:WrapTextInColorCode("Just the Trees") .. ": " .. TURNED_OFF }, "chat")
 	game:RunTimers()
-	Equal(game.frame:GetTab(), game.frame.primarySpecTabID, "tab")
-	Equal(game.frame.calculatorMode, false, "plan mode")
-	Equal(game.frame.ApplyButton:IsShown(), true, "Apply")
+	GameWindowBack(game, pieces)
+	-- The game goes on without the addon: nothing more is reported or said.
 	C_Traits.GetEntryInfo = entryInfo
+	game.frame:UpdateTabs()
+	game.inspecting = true
+	game.frame:UpdateInspecting()
+	game.inspecting = false
+	game.frame:UpdateInspecting()
+	game.frame:RefreshConfigID()
+	game:CloseTalentWindow()
+	game:OpenTalentWindow()
+	game:SetCVar("colorblindMode", true)
+	game:RunTimers()
+	GameWindowBack(game, pieces)
+	Equal(#game.errors .. " " .. #game.chat, "1 1", "errors and chat lines after")
+	-- After /reload the plan opens again.
+	game = NewGame()
+	game:OpenPlan()
+	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "tab after /reload")
+	Equal(#game.errors, 0, "errors after /reload")
+end)
+
+Test("an error in a click on the plan turns it off and shows the character's talents", function()
+	local game = NewGame()
+	game:OpenTalentWindow()
+	local pieces = game:GamePiecesShown()
 	game:ClickTab(game.frame.calculatorTabID)
-	Equal(game.frame:GetTab(), game.frame.calculatorTabID, "tab once it works")
-	Equal(#game.errors, 1, "errors after")
+	game:ClickTimes(A1, 2)
+	function IsModifiedClick()
+		error("modified click failed")
+	end
+	game:Click(A1)
+	Equal(#game.errors, 1, "errors reported")
+	Equal(LastChat(game):find(TURNED_OFF, 1, true) ~= nil, true, "chat")
+	game:RunTimers()
+	GameWindowBack(game, pieces)
+	Equal(#game.chat, 1, "chat lines")
+end)
+
+Test("below the talent level an error greys the menu button out again", function()
+	local game = NewGame({ belowTalentLevel = true })
+	Equal(TalentMicroButton:IsEnabled(), true, "button before")
+	local show = ShowUIPanel
+	function ShowUIPanel()
+		error("show failed")
+	end
+	game:PressTalentButton()
+	ShowUIPanel = show
+	game:RunTimers()
+	Equal(#game.errors, 1, "errors reported")
+	Equal(LastChat(game):find(TURNED_OFF, 1, true) ~= nil, true, "chat")
+	Equal(TalentMicroButton:IsEnabled(), false, "button greyed out")
+	Equal(game:WindowMinimizingEnabled(), true, "minimizing back on")
+	TalentMicroButton:UpdateMicroButton()
+	game:PressTalentButton()
+	Equal(TalentMicroButton:IsEnabled(), false, "button after the game updates it")
+	Equal(game:WindowShown(), false, "window after the game updates the button")
+	Equal(#game.errors .. " " .. #game.chat, "1 1", "errors and chat lines after")
+end)
+
+Test("if the talent window lacks a piece the plan needs, chat says so once and the plan adds nothing", function()
+	local game = NewGame({ belowTalentLevel = true, changeGame = function()
+		local GetTemplateInfo = C_XMLUtil.GetTemplateInfo
+		function C_XMLUtil.GetTemplateInfo(name)
+			if name ~= "TalentFrameGateTemplate" then
+				return GetTemplateInfo(name)
+			end
+		end
+	end })
+	Equal(TalentMicroButton:IsEnabled(), true, "button before the talent window loads")
+	game:OpenTalentWindow()
+	game:RunTimers()
+	Equal(game.frame.calculatorTabID, nil, "the plan's tab")
+	Equal(TalentMicroButton:IsEnabled(), false, "button greyed out")
+	game:CloseTalentWindow()
+	game:OpenTalentWindow()
+	Same(game.chat, { NORMAL_FONT_COLOR:WrapTextInColorCode("Just the Trees") .. ": " .. GameChanged("the talent window") }, "chat")
+	Equal(#game.errors, 0, "errors")
+end)
+
+Test("if the game lacks a piece the addon needs, chat says so once and the addon adds nothing", function()
+	local saved = { format = 1, characters = { ["Ana-Realm"] = { build = Plan(Node(A1, 2, 0)) } }, old = true }
+	local game = NewGame({ belowTalentLevel = true, saved = saved, changeGame = function()
+		C_XMLUtil = nil
+	end })
+	Equal(TalentMicroButton:IsEnabled(), false, "button stays greyed out")
+	Equal(JustTheTreesDB, saved, "saved plans")
+	Equal(JustTheTreesDB.old, true, "saved plans left as they were")
+	game.belowTalentLevel = false
+	TalentMicroButton:UpdateMicroButton()
+	game:OpenTalentWindow()
+	Equal(game.frame.calculatorTabID, nil, "the plan's tab")
+	Same(game.chat, { NORMAL_FONT_COLOR:WrapTextInColorCode("Just the Trees") .. ": " .. GameChanged("the game") }, "chat")
+	Equal(#game.errors, 0, "errors")
 end)
 
 Test("the tab is there when the talent window loaded before the addon", function()

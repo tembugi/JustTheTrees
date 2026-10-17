@@ -17,9 +17,11 @@ local POINTS_PER_ROW = 5
 local ROW_TOLERANCE = 0.5
 
 local TALENT_UI = "Blizzard_PlayerSpells"
-local REQUIRED_EDGE = Enum.TraitEdgeType.RequiredForAvailability
-local SUFFICIENT_EDGE = Enum.TraitEdgeType.SufficientForAvailability
-local EXCLUSIVE_EDGE = Enum.TraitEdgeType.MutuallyExclusive
+-- Checked at load with the game's other pieces (see Loading).
+local EDGE_TYPES = Enum.TraitEdgeType or {}
+local REQUIRED_EDGE = EDGE_TYPES.RequiredForAvailability
+local SUFFICIENT_EDGE = EDGE_TYPES.SufficientForAvailability
+local EXCLUSIVE_EDGE = EDGE_TYPES.MutuallyExclusive
 
 -- The addon's own frame for game events (see Loading), and the color blind mode
 -- update, set once the talent window is installed.
@@ -170,9 +172,53 @@ local function Say(message)
 	print(NORMAL_FONT_COLOR:WrapTextInColorCode(ADDON_TITLE) .. ": " .. message)
 end
 
--- Something the player asked for did not happen. The line is red after the name.
-local function SayFailed(message)
-	Say(RED_FONT_COLOR:WrapTextInColorCode(message))
+-- Something the player asked for did not happen, or something stopped. The line is red
+-- after the name, then says what the player can do, if anything.
+local function SayFailed(message, advice)
+	Say(RED_FONT_COLOR:WrapTextInColorCode(message) .. (advice and " " .. advice or ""))
+end
+
+--------------------------------------------------------------------------------
+-- Errors
+--------------------------------------------------------------------------------
+
+-- The plan runs inside the game's own code: its talent window, menu button, menus and
+-- events. An error there must not break the code that called it, nor repeat on every
+-- redraw. The first error goes to the game's error handler and is said once in chat;
+-- the addon then puts back what it changed (PutBack: its tab hidden, the character's
+-- own talents on screen, the menu button as the game draws it) and stays off until /reload.
+local stopped = false
+local PutBack -- defined with the tab, below
+
+-- Turning off runs in the game's code too, so nothing in it may throw.
+local function TurnOff(problem, advice)
+	if stopped then
+		return
+	end
+	stopped = true
+	xpcall(SayFailed, CallErrorHandler, problem, advice)
+	xpcall(PutBack, CallErrorHandler)
+end
+
+local function Passed(ok, ...)
+	if ok then
+		return ...
+	end
+	TurnOff("The talent plan stopped working and is off.", "Type /reload to turn it back on.")
+end
+
+-- Runs func and returns what it returns, while the addon is on.
+local function Guarded(func, ...)
+	if not stopped then
+		return Passed(xpcall(func, CallErrorHandler, ...))
+	end
+end
+
+-- func as a hook, script or callback the game calls: each call runs through Guarded.
+local function Guard(func)
+	return function(...)
+		return Guarded(func, ...)
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -1190,7 +1236,7 @@ local function ApplyIcon(texture, visual)
 		return
 	end
 	spell:ContinueWithCancelOnSpellLoad(function()
-		ApplyIcon(texture, visual)
+		Guarded(ApplyIcon, texture, visual)
 	end)
 end
 
@@ -1423,13 +1469,13 @@ local function HideWidget(frame, widget)
 	end
 	if not widget.calculatorKeepHidden then
 		widget.calculatorKeepHidden = true
-		widget:HookScript("OnShow", function(self)
+		widget:HookScript("OnShow", Guard(function(self)
 			if ShowingCalculator(frame) then
 				frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
 				frame.calculatorHiddenWidgets[self] = true
 				self:Hide()
 			end
-		end)
+		end))
 	end
 	widget:Hide()
 end
@@ -1546,8 +1592,8 @@ local function CreatePlanButton(frame, board)
 	local button = CreateFrame("Button", nil, board)
 	button:SetSize(frame:GetButtonSize(), frame:GetButtonSize())
 	button:RegisterForClicks("LeftButtonDown", "RightButtonDown")
-	button:SetScript("OnClick", NodeClick)
-	button:SetScript("OnEnter", ShowNodeTooltip)
+	button:SetScript("OnClick", Guard(NodeClick))
+	button:SetScript("OnEnter", Guard(ShowNodeTooltip))
 	button:SetScript("OnLeave", GameTooltip_Hide)
 	button.Shadow = button:CreateTexture(nil, "BACKGROUND")
 	button.Shadow:SetPoint("CENTER")
@@ -1909,7 +1955,7 @@ local function BuildGates(frame)
 			gate = CreateFrame("Frame", nil, board, "TalentFrameGateTemplate")
 			gate:SetFrameLevel(board:GetFrameLevel())
 			gate:EnableMouseMotion(true)
-			gate:SetScript("OnEnter", ShowGateTooltip)
+			gate:SetScript("OnEnter", Guard(ShowGateTooltip))
 			gate:SetScript("OnLeave", GameTooltip_Hide)
 			frame.calculatorGates[count] = gate
 		end
@@ -2412,14 +2458,14 @@ local function PlanButton(frame, text, tooltipText, onClick)
 	button:SetText(text)
 	button:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + 5)
 	button:SetScript("OnClick", function()
-		onClick(frame)
+		Guarded(onClick, frame)
 	end)
-	button:SetScript("OnEnter", function(self)
+	button:SetScript("OnEnter", Guard(function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip_SetTitle(GameTooltip, text)
 		GameTooltip_AddNormalLine(GameTooltip, tooltipText)
 		GameTooltip:Show()
-	end)
+	end))
 	button:SetScript("OnLeave", GameTooltip_Hide)
 	button:Disable()
 	button:Hide()
@@ -2446,16 +2492,16 @@ local function CreatePlanControls(frame)
 	dropdown:SetFrameLevel(2000)
 	dropdown:SetWidth(160)
 	dropdown:SetPoint("BOTTOM", frame.Background, "BOTTOM", 0, 36)
-	dropdown:SetupMenu(function(_, rootDescription)
-		local function isSelected(slot)
+	dropdown:SetupMenu(Guard(function(_, rootDescription)
+		local isSelected = Guard(function(slot)
 			return (ns.slot or 1) == slot
-		end
-		local function setSelected(slot)
+		end)
+		local setSelected = Guard(function(slot)
 			SelectSlot(frame, slot)
-		end
+		end)
 		rootDescription:CreateRadio(SlotText(1), isSelected, setSelected, 1)
 		rootDescription:CreateRadio(SlotText(2), isSelected, setSelected, 2)
-	end)
+	end))
 	dropdown:Hide()
 	frame.calculatorSlotDropdown = dropdown
 end
@@ -2495,29 +2541,9 @@ end
 -- The tab
 --------------------------------------------------------------------------------
 
+-- The talent frame, once the plan's tab is on it.
+local installedFrame
 local enteringCalculator = false
-
-local function EnterCalculator(frame)
-	if enteringCalculator then
-		return true
-	end
-	if frame:IsInspecting() then
-		return false
-	end
-	EnsureWorkingCopy()
-	enteringCalculator = true
-	-- An error is reported with its full stack. Returning false sends SetTab back to
-	-- the character's own talents instead of leaving the frame half switched.
-	local opened = xpcall(function()
-		frame.calculatorMode = true
-		-- The tree is read each time the tab opens. Edits reuse what was read.
-		RememberFrame(frame)
-		ShowPlan(frame)
-		ShowPlanControls(frame)
-	end, CallErrorHandler)
-	enteringCalculator = false
-	return opened
-end
 
 -- The character's pieces were only hidden. Put them back without reloading the spec.
 local function RestoreSharedTree(frame)
@@ -2537,19 +2563,24 @@ local function LeaveForInspect(frame)
 	TabSystemOwnerMixin.SetTab(frame, frame:GetActiveTab())
 end
 
--- Opening the tab can fail (inspecting, or an error while drawing the plan). The tab
--- change is still running then, so the switch back waits one frame.
+-- The window's own tab in place of the plan's.
+local function SwitchToGameTab(frame)
+	if frame:GetTab() ~= frame.calculatorTabID then
+		return
+	end
+	if frame:IsInspecting() then
+		LeaveForInspect(frame)
+	else
+		frame:SetTab(frame:GetActiveTab())
+	end
+end
+
+-- Opening the tab while inspecting is refused. The tab change is still running then, so
+-- the switch back waits one frame.
 local function ReturnToActiveTab(frame)
 	RestoreSharedTree(frame)
 	C_Timer.After(0, function()
-		if frame:GetTab() ~= frame.calculatorTabID then
-			return
-		end
-		if frame:IsInspecting() then
-			LeaveForInspect(frame)
-		else
-			frame:SetTab(frame:GetActiveTab())
-		end
+		Guarded(SwitchToGameTab, frame)
 	end)
 end
 
@@ -2559,10 +2590,17 @@ local function OpenCalculatorTab(frame)
 		ReturnToActiveTab(frame)
 		return
 	end
-	if not EnterCalculator(frame) then
-		SayFailed("Couldn't open the plan. Showing your talents instead.")
-		ReturnToActiveTab(frame)
+	if enteringCalculator then
+		return
 	end
+	EnsureWorkingCopy()
+	enteringCalculator = true
+	frame.calculatorMode = true
+	-- The tree is read each time the tab opens. Edits reuse what was read.
+	RememberFrame(frame)
+	ShowPlan(frame)
+	ShowPlanControls(frame)
+	enteringCalculator = false
 end
 
 -- The calculator plans the player's own tree, so its tab is off while inspecting.
@@ -2577,6 +2615,8 @@ local openPending = false
 -- A toggle that closes the window hides it first. The same press must not open it again, so
 -- the flag lasts only until the next frame.
 local closingWindow = false
+-- True while the addon has turned the window's minimizing off for an open.
+local minimizingOff = false
 
 local function ShowTalentsTab(window)
 	openPending = false
@@ -2593,6 +2633,7 @@ local function ShowTalentsTab(window)
 	if not window.isMinimizingEnabled then
 		window:SetMinimizingEnabled(true)
 	end
+	minimizingOff = false
 	-- The tree may still be on the plan's tab from an earlier open: put the game's tree back.
 	local talents = window.TalentsFrame
 	if talents.calculatorMode then
@@ -2609,23 +2650,24 @@ local function Install(frame)
 	end
 
 	frame.calculatorTabID = frame:AddNamedTab(ADDON_TITLE)
+	installedFrame = frame
 	local calculatorTab = frame.TabSystem:GetTabButton(frame.calculatorTabID)
 	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab
 	-- is not a spec, so its label is written again, without the lock or checkmark,
 	-- after the game writes it. Only a turned-off tab gets the disabled color.
-	hooksecurefunc(calculatorTab, "UpdateTabText", function(self)
+	hooksecurefunc(calculatorTab, "UpdateTabText", Guard(function(self)
 		local text = TabSystemButtonMixin.GetTabText(self)
 		if self:IsForceDisabled() then
 			text = DISABLED_FONT_COLOR:WrapTextInColorCode(text)
 		end
 		self.Text:SetText(text)
-	end)
+	end))
 	CreatePlanControls(frame)
 
 	-- Tab clicks run the SetTab the frame captured when it was made. That SetTab
 	-- calls TabSystemOwnerMixin.SetTab, so this hook sees every tab change.
 	-- It runs before the frame loads the new tab's config.
-	hooksecurefunc(TabSystemOwnerMixin, "SetTab", function(owner, tabID)
+	hooksecurefunc(TabSystemOwnerMixin, "SetTab", Guard(function(owner, tabID)
 		if owner ~= frame then
 			return
 		end
@@ -2634,93 +2676,93 @@ local function Install(frame)
 		elseif frame.calculatorMode then
 			RestoreSharedTree(frame)
 		end
-	end)
+	end))
 
-	hooksecurefunc(frame, "UpdateTabs", UpdateCalculatorTab)
-	hooksecurefunc(frame, "UpdateInspecting", function(self)
+	hooksecurefunc(frame, "UpdateTabs", Guard(UpdateCalculatorTab))
+	hooksecurefunc(frame, "UpdateInspecting", Guard(function(self)
 		UpdateCalculatorTab(self)
 		if self:IsInspecting() and self.calculatorMode then
 			LeaveForInspect(self)
 		end
-	end)
+	end))
 
 	-- The calculator tab has no spec config, so SetTab shows the locked-spec overlay.
-	hooksecurefunc(frame, "SetDisabledOverlayShown", function(self, shown)
+	hooksecurefunc(frame, "SetDisabledOverlayShown", Guard(function(self, shown)
 		if shown and ShowingCalculator(self) then
 			self.DisabledOverlay:Hide()
 		end
-	end)
+	end))
 
 	-- The character's tree can reload under the calculator. Its buttons stay hidden.
-	hooksecurefunc(frame, "InstantiateTalentButton", function(self, nodeID)
+	hooksecurefunc(frame, "InstantiateTalentButton", Guard(function(self, nodeID)
 		if ShowingCalculator(self) then
 			local button = self:GetTalentButtonByNodeID(nodeID)
 			if button then
 				HideWidget(self, button)
 			end
 		end
-	end)
-	hooksecurefunc(frame, "RefreshConfigID", function(self)
+	end))
+	hooksecurefunc(frame, "RefreshConfigID", Guard(function(self)
 		if ShowingCalculator(self) then
 			HideClientTree(self)
 		end
-	end)
+	end))
 	-- The game drew no gates for its hidden buttons. ShowClientTree draws them again.
-	hooksecurefunc(frame, "RefreshGates", function(self)
+	hooksecurefunc(frame, "RefreshGates", Guard(function(self)
 		if ShowingCalculator(self) then
 			self.calculatorGatesStale = true
 			HideClientTree(self)
 		end
-	end)
+	end))
 
 	-- These put the character's point totals back on the currency display and tree headers.
-	local function KeepPlanNumbers(self)
+	local KeepPlanNumbers = Guard(function(self)
 		if ShowingCalculator(self) then
 			PaintSpent(self)
 		end
-	end
+	end)
 	hooksecurefunc(frame, "RefreshClassCurrencyDisplay", KeepPlanNumbers)
 	hooksecurefunc(frame, "RefreshTreeHeaders", KeepPlanNumbers)
 
 	-- These show Undo, Reset and the spec controls again. The window updates them on
 	-- its own, for example on every aura change while it is open, so this stays light.
-	local function KeepGameControlsHidden(self)
+	local KeepGameControlsHidden = Guard(function(self)
 		if ShowingCalculator(self) then
 			HideGameControls(self)
 			HideClientTree(self)
 		end
-	end
+	end)
 	hooksecurefunc(frame, "UpdateConfigButtonsState", KeepGameControlsHidden)
 	hooksecurefunc(frame, "HandlePlayerTalentUpdate", KeepGameControlsHidden)
 
 	-- The window's search results are up to date whenever it displays them. It does so
 	-- at the end of its own updates, after any new arrows were drawn.
-	hooksecurefunc(frame, "DisplayFullSearchResults", function(self)
+	hooksecurefunc(frame, "DisplayFullSearchResults", Guard(function(self)
 		if ShowingCalculator(self) then
 			ApplyPlanSearch(self)
 			HideClientTree(self)
 		end
-	end)
+	end))
 
-	frame:HookScript("OnShow", function(self)
+	frame:HookScript("OnShow", Guard(function(self)
 		if ShowingCalculator(self) then
 			ShowPlan(self)
 		end
-	end)
+	end))
 	-- Runs after the game's own open code, which picks the spell book below the level.
 	-- The switch happens in the same open, so nothing is drawn on the spell book page.
-	PlayerSpellsFrame:HookScript("OnShow", function(self)
+	PlayerSpellsFrame:HookScript("OnShow", Guard(function(self)
 		if openPending then
 			ShowTalentsTab(self)
 		end
-	end)
+	end))
 	-- The game also hides the window to change its size, so hiding does not cancel a pending switch.
-	PlayerSpellsFrame:HookScript("OnHide", function()
+	PlayerSpellsFrame:HookScript("OnHide", Guard(function()
 		closingWindow = true
-		C_Timer.After(0, function()
+		C_Timer.After(0, Guard(function()
 			closingWindow = false
-		end)
-	end)
+		end))
+	end))
 
 	-- Color blind mode marks the talents that can take a point, as in the talent
 	-- window's own UpdateColorBlindModeUI. Watched with CVAR_UPDATE on the addon's own
@@ -2742,6 +2784,9 @@ end
 -- Below the talent level
 --------------------------------------------------------------------------------
 
+-- True once the menu button is the addon's to put back.
+local belowLevelInstalled = false
+
 -- The game greys out the talents menu button until the character has earned a talent point
 -- (PlayerSpellsMicroButtonMixin:UpdateMicroButton). The button is made clickable again
 -- while that holds, and a click opens the window on its talents tab, which holds the game's
@@ -2753,10 +2798,11 @@ local function EnableLockedTalentButton()
 end
 
 local function InstallBelowLevel()
+	belowLevelInstalled = true
 	-- The game's toggle refuses the talent tab while the button is locked and shows nothing.
 	-- Here the talents tab is shown instead. The game opens the window on its spell book
 	-- page first, so a window that is opening gets its tab after that page is set.
-	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", function(suggestedTab)
+	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", Guard(function(suggestedTab)
 		if suggestedTab ~= PlayerSpellsUtil.FrameTabs.ClassTalents or not PlayerSpellsFrame
 			or DISALLOW_FRAME_TOGGLING or closingWindow or C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
 			return
@@ -2771,6 +2817,7 @@ local function InstallBelowLevel()
 			-- follows in the same open.
 			local window = PlayerSpellsFrame
 			openPending = true
+			minimizingOff = true
 			window:SetMinimizingEnabled(false)
 			if window.isMinimized then
 				window:SetMinimized(false)
@@ -2778,40 +2825,183 @@ local function InstallBelowLevel()
 			window:SetTab(window.spellBookTabID)
 			ShowUIPanel(window)
 			-- Normally the open restores it. This covers an open that never reached the hook.
-			C_Timer.After(0, function()
+			C_Timer.After(0, Guard(function()
 				if not window.isMinimizingEnabled then
 					window:SetMinimizingEnabled(true)
 				end
-			end)
+				minimizingOff = false
+			end))
 		end
-	end)
-	hooksecurefunc(TalentMicroButton, "UpdateMicroButton", EnableLockedTalentButton)
+	end))
+	hooksecurefunc(TalentMicroButton, "UpdateMicroButton", Guard(EnableLockedTalentButton))
 	EnableLockedTalentButton()
+end
+
+--------------------------------------------------------------------------------
+-- Turning off
+--------------------------------------------------------------------------------
+
+-- The menu button greyed out again below the talent level, and minimizing back as the game
+-- has it (off only while inspecting) if the addon turned it off for an open.
+local function PutBackMenuButton()
+	openPending = false
+	if minimizingOff then
+		minimizingOff = false
+		PlayerSpellsFrame:SetMinimizingEnabled(not PlayerSpellsFrame:IsInspecting())
+	end
+	if not C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
+		TalentMicroButton:Disable()
+	end
+end
+
+-- The talent window as the game draws it: the plan's tab hidden and the character's own
+-- talents on screen. The error may have come in the middle of a tab change, so the switch
+-- to the window's own tab waits one frame.
+local function PutBackTalentWindow(frame)
+	frame.TabSystem:SetTabShown(frame.calculatorTabID, false)
+	if frame.calculatorMode then
+		RestoreSharedTree(frame)
+	end
+	C_Timer.After(0, function()
+		xpcall(SwitchToGameTab, CallErrorHandler, frame)
+	end)
+end
+
+-- Each part on its own, so one that fails doesn't keep the other in place.
+PutBack = function()
+	if belowLevelInstalled then
+		xpcall(PutBackMenuButton, CallErrorHandler)
+	end
+	if installedFrame then
+		xpcall(PutBackTalentWindow, CallErrorHandler, installedFrame)
+	end
 end
 
 --------------------------------------------------------------------------------
 -- Loading
 --------------------------------------------------------------------------------
 
+-- The game's pieces the addon can't do without, checked before it adds anything. If one is
+-- missing, the addon says so once and adds nothing.
+local function HasFunctions(owner, names)
+	if type(owner) ~= "table" then
+		return false
+	end
+	for _, name in ipairs(names) do
+		if type(owner[name]) ~= "function" then
+			return false
+		end
+	end
+	return true
+end
+
+local function HasTables(owner, names)
+	if type(owner) ~= "table" then
+		return false
+	end
+	for _, name in ipairs(names) do
+		if type(owner[name]) ~= "table" then
+			return false
+		end
+	end
+	return true
+end
+
+-- At login: the talent window's toggle and menu button, and what the plan reads the tree with.
+local function HasLoginPieces()
+	return type(REQUIRED_EDGE) == "number" and type(SUFFICIENT_EDGE) == "number" and type(EXCLUSIVE_EDGE) == "number"
+		and HasTables(Enum, { "TraitNodeType", "TraitEdgeVisualStyle" })
+		and HasFunctions(_G, { "ShowUIPanel" })
+		and HasFunctions(C_AddOns, { "IsAddOnLoaded" })
+		and HasFunctions(C_SpecializationInfo, { "HasPlayerEarnedATalentPoint", "GetCombatConfigIDForSpecGroup", "GetActiveSpecGroup" })
+		and HasFunctions(C_Traits, { "GetGroupDisplayInfoByTreeID", "GetConfigInfo", "GetTreeInfo", "GetTreeNodes", "GetNodeInfo", "GetEntryInfo", "GetDefinitionInfo", "GetSubTreeInfo", "GetConditionInfo" })
+		and HasFunctions(PlayerSpellsUtil, { "TogglePlayerSpellsFrame" }) and HasTables(PlayerSpellsUtil, { "FrameTabs" })
+		and HasFunctions(TalentMicroButton, { "Enable", "Disable", "UpdateMicroButton" })
+		and HasFunctions(C_XMLUtil, { "GetTemplateInfo" })
+end
+
+-- The talent frame's functions the plan hooks or calls, and the parts it hides, covers or
+-- draws on.
+local TALENT_FRAME_FUNCTIONS = {
+	"AddNamedTab", "GetTab", "SetTab", "GetActiveTab", "IsInspecting", "UpdateTabs", "UpdateInspecting",
+	"SetDisabledOverlayShown", "InstantiateTalentButton", "RefreshConfigID", "RefreshGates",
+	"RefreshClassCurrencyDisplay", "RefreshTreeHeaders", "UpdateConfigButtonsState", "HandlePlayerTalentUpdate",
+	"DisplayFullSearchResults", "InitializeActiveSpec", "EnumerateAllTalentButtons", "GetTalentButtonByNodeID",
+	"GetButtonSize", "AnchorGate", "GetConfigID", "GetTalentTreeID", "GetTreeInfo", "GetPanOffset",
+	"GetSearchMatchTypeForEntry", "ShouldHideSingleRankNumbers", "GetTraitTreeName", "HookScript",
+}
+local TALENT_FRAME_PARTS = {
+	"TabSystem", "edgePool", "gatePool", "talentDisplayFramePool", "ApplyButton", "UndoButton", "ResetButton",
+	"ActiveSpec", "DisabledOverlay", "ClassCurrencyDisplay", "BackgroundBorder", "Background", "ButtonsParent",
+}
+-- The game's templates the plan's pieces are made from.
+local TEMPLATES = { "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
+
+local function HasTalentFramePieces(frame)
+	return HasFunctions(frame, TALENT_FRAME_FUNCTIONS) and HasTables(frame, TALENT_FRAME_PARTS)
+		and HasFunctions(frame.TabSystem, { "GetTabButton", "SetTabEnabled", "SetTabShown" })
+		and HasTables(frame.ClassCurrencyDisplay, { "UnspentLabel", "Border", "CurrentAmountContainer" })
+		and HasTables(frame.ClassCurrencyDisplay.CurrentAmountContainer, { "CurrencyAmount" })
+end
+
+-- Once the talent window has loaded: the window, its talent frame, and the game's talent
+-- button code the plan's buttons are drawn with.
+local function HasTalentWindowPieces()
+	local window = PlayerSpellsFrame
+	if not (HasFunctions(window, { "SetTab", "GetTab", "IsInspecting", "ForceMaximize", "SetMinimized", "SetMinimizingEnabled", "HookScript" })
+		and window.talentTabID and window.spellBookTabID and HasTalentFramePieces(window.TalentsFrame)
+		and HasFunctions(TabSystemOwnerMixin, { "SetTab" }) and HasFunctions(TabSystemButtonMixin, { "GetTabText" })
+		and HasFunctions(TalentButtonArtMixin, { "ApplyVisualState", "UpdateStateBorder", "SetBorderAtlas", "GetSquareEdgeDiameterOffset", "GetChoiceEdgeDiameterOffset", "GetCircleEdgeDiameterOffset" })
+		and HasTables(TalentButtonArtMixin, { "ArtSet" })
+		and HasFunctions(TalentButtonUtil, { "CalculateIconTextureFromInfo", "SetSpendText", "TranslateNodePositionsToAnchorPositions", "GetStyleForSearchMatchType" })
+		and HasTables(TalentButtonUtil, { "BaseVisualState" })
+		and HasFunctions(TalentUtil, { "GetTalentName" }) and HasFunctions(SpellSearchUtil, { "IsActionBarMatchType" }))
+	then
+		return false
+	end
+	for _, template in ipairs(TEMPLATES) do
+		if not C_XMLUtil.GetTemplateInfo(template) then
+			return false
+		end
+	end
+	return true
+end
+
+local function SayGameChanged(what)
+	TurnOff("The talent plan is off: " .. what .. " has changed since version " .. VERSION .. ".", "Look for an update.")
+end
+
+local function InstallTalentWindow()
+	if HasTalentWindowPieces() then
+		Install(PlayerSpellsFrame.TalentsFrame)
+	else
+		SayGameChanged("the talent window")
+	end
+end
+
 -- The saved plans load with the addon. The talent window loads when the player first
 -- opens it, or before the addon when something opened it earlier. Watched here, not with
 -- EventUtil.ContinueOnAddOnLoaded: that writes the addon's callback into Blizzard's shared
 -- event registry, which taints it.
 events:RegisterEvent("ADDON_LOADED")
-events:SetScript("OnEvent", function(_, event, ...)
+events:SetScript("OnEvent", Guard(function(_, event, ...)
 	if event == "ADDON_LOADED" then
 		if ... == addonName then
+			if not HasLoginPieces() then
+				SayGameChanged("the game")
+				return
+			end
 			NormalizeSaved()
 			InstallBelowLevel()
 			if select(2, C_AddOns.IsAddOnLoaded(TALENT_UI)) then
-				Install(PlayerSpellsFrame.TalentsFrame)
+				InstallTalentWindow()
 			end
 		elseif ... == TALENT_UI then
-			Install(PlayerSpellsFrame.TalentsFrame)
+			InstallTalentWindow()
 		end
 	elseif event == "CVAR_UPDATE" then
 		if ... == "colorblindMode" then
 			OnColorBlindMode()
 		end
 	end
-end)
+end))
