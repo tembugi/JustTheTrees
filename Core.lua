@@ -186,7 +186,7 @@ end
 -- events. An error there must not break the code that called it, nor repeat on every
 -- redraw. The first error goes to the game's error handler and is said once in chat;
 -- the addon then puts back what it changed (PutBack: its tab hidden, the character's
--- own talents on screen, the menu button as the game draws it) and stays off until /reload.
+-- own talents on screen) and stays off until /reload.
 local stopped = false
 local PutBack -- defined with the tab, below
 
@@ -2609,38 +2609,6 @@ local function UpdateCalculatorTab(frame)
 	frame.TabSystem:SetTabEnabled(frame.calculatorTabID, not inspecting, inspecting and "Not available while inspecting." or nil)
 end
 
--- The window's talents tab is off below the level, but it can still be shown. The tree on
--- it is the game's own (the spec tab inside it). The plan's tab is turned off here.
-local openPending = false
--- A toggle that closes the window hides it first. The same press must not open it again, so
--- the flag lasts only until the next frame.
-local closingWindow = false
--- True while the addon has turned the window's minimizing off for an open.
-local minimizingOff = false
-
-local function ShowTalentsTab(window)
-	openPending = false
-	-- The talents tab can't be minimized, and the spell book opens minimized. Switching to the
-	-- talents tab while minimized maximizes the window then, and that restarts it on its spell
-	-- book page. So the window is maximized first, while the spell book is still on screen.
-	if window.isMinimized then
-		window:ForceMaximize()
-	end
-	if window:GetTab() ~= window.talentTabID then
-		window:SetTab(window.talentTabID)
-	end
-	-- Minimizing was off for the open. The game turns it back on after a size change too.
-	if not window.isMinimizingEnabled then
-		window:SetMinimizingEnabled(true)
-	end
-	minimizingOff = false
-	-- The tree may still be on the plan's tab from an earlier open: put the game's tree back.
-	local talents = window.TalentsFrame
-	if talents.calculatorMode then
-		talents:SetTab(talents:GetActiveTab())
-	end
-end
-
 -- Every hook here runs after Blizzard's own function and leaves that function in
 -- place. hooksecurefunc keeps the addon's code out of the talent frame's own work,
 -- so applying talents and switching specs run untainted.
@@ -2749,21 +2717,6 @@ local function Install(frame)
 			ShowPlan(self)
 		end
 	end))
-	-- Runs after the game's own open code, which picks the spell book below the level.
-	-- The switch happens in the same open, so nothing is drawn on the spell book page.
-	PlayerSpellsFrame:HookScript("OnShow", Guard(function(self)
-		if openPending then
-			ShowTalentsTab(self)
-		end
-	end))
-	-- The game also hides the window to change its size, so hiding does not cancel a pending switch.
-	PlayerSpellsFrame:HookScript("OnHide", Guard(function()
-		closingWindow = true
-		C_Timer.After(0, Guard(function()
-			closingWindow = false
-		end))
-	end))
-
 	-- Color blind mode marks the talents that can take a point, as in the talent
 	-- window's own UpdateColorBlindModeUI. Watched with CVAR_UPDATE on the addon's own
 	-- frame, not CVarCallbackRegistry: registering there writes the addon's callback into
@@ -2781,78 +2734,8 @@ local function Install(frame)
 end
 
 --------------------------------------------------------------------------------
--- Below the talent level
---------------------------------------------------------------------------------
-
--- True once the menu button is the addon's to put back.
-local belowLevelInstalled = false
-
--- The game greys out the talents menu button until the character has earned a talent point
--- (PlayerSpellsMicroButtonMixin:UpdateMicroButton). The button is made clickable again
--- while that holds, and a click opens the window on its talents tab, which holds the game's
--- own tree. No plan tab is opened there.
-local function EnableLockedTalentButton()
-	if not C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
-		TalentMicroButton:Enable()
-	end
-end
-
-local function InstallBelowLevel()
-	belowLevelInstalled = true
-	-- The game's toggle refuses the talent tab while the button is locked and shows nothing.
-	-- Here the talents tab is shown instead. The game opens the window on its spell book
-	-- page first, so a window that is opening gets its tab after that page is set.
-	hooksecurefunc(PlayerSpellsUtil, "TogglePlayerSpellsFrame", Guard(function(suggestedTab)
-		if suggestedTab ~= PlayerSpellsUtil.FrameTabs.ClassTalents or not PlayerSpellsFrame
-			or DISALLOW_FRAME_TOGGLING or closingWindow or C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
-			return
-		end
-		if PlayerSpellsFrame:IsShown() then
-			ShowTalentsTab(PlayerSpellsFrame)
-		else
-			-- The game's open code keeps a spell book tab and picks it otherwise, and it minimizes
-			-- a spell book. A minimized window would be maximized by the switch to talents, which
-			-- hides and shows it inside its own open. So minimizing is off while the window opens
-			-- on the spell book, as the game's ForceMaximize does, and the switch to talents
-			-- follows in the same open.
-			local window = PlayerSpellsFrame
-			openPending = true
-			minimizingOff = true
-			window:SetMinimizingEnabled(false)
-			if window.isMinimized then
-				window:SetMinimized(false)
-			end
-			window:SetTab(window.spellBookTabID)
-			ShowUIPanel(window)
-			-- Normally the open restores it. This covers an open that never reached the hook.
-			C_Timer.After(0, Guard(function()
-				if not window.isMinimizingEnabled then
-					window:SetMinimizingEnabled(true)
-				end
-				minimizingOff = false
-			end))
-		end
-	end))
-	hooksecurefunc(TalentMicroButton, "UpdateMicroButton", Guard(EnableLockedTalentButton))
-	EnableLockedTalentButton()
-end
-
---------------------------------------------------------------------------------
 -- Turning off
 --------------------------------------------------------------------------------
-
--- The menu button greyed out again below the talent level, and minimizing back as the game
--- has it (off only while inspecting) if the addon turned it off for an open.
-local function PutBackMenuButton()
-	openPending = false
-	if minimizingOff then
-		minimizingOff = false
-		PlayerSpellsFrame:SetMinimizingEnabled(not PlayerSpellsFrame:IsInspecting())
-	end
-	if not C_SpecializationInfo.HasPlayerEarnedATalentPoint() then
-		TalentMicroButton:Disable()
-	end
-end
 
 -- The talent window as the game draws it: the plan's tab hidden and the character's own
 -- talents on screen. The error may have come in the middle of a tab change, so the switch
@@ -2867,13 +2750,9 @@ local function PutBackTalentWindow(frame)
 	end)
 end
 
--- Each part on its own, so one that fails doesn't keep the other in place.
 PutBack = function()
-	if belowLevelInstalled then
-		xpcall(PutBackMenuButton, CallErrorHandler)
-	end
 	if installedFrame then
-		xpcall(PutBackTalentWindow, CallErrorHandler, installedFrame)
+		PutBackTalentWindow(installedFrame)
 	end
 end
 
@@ -2907,16 +2786,13 @@ local function HasTables(owner, names)
 	return true
 end
 
--- At login: the talent window's toggle and menu button, and what the plan reads the tree with.
+-- At login: what the plan reads the tree with.
 local function HasLoginPieces()
 	return type(REQUIRED_EDGE) == "number" and type(SUFFICIENT_EDGE) == "number" and type(EXCLUSIVE_EDGE) == "number"
 		and HasTables(Enum, { "TraitNodeType", "TraitEdgeVisualStyle" })
-		and HasFunctions(_G, { "ShowUIPanel" })
 		and HasFunctions(C_AddOns, { "IsAddOnLoaded" })
-		and HasFunctions(C_SpecializationInfo, { "HasPlayerEarnedATalentPoint", "GetCombatConfigIDForSpecGroup", "GetActiveSpecGroup" })
+		and HasFunctions(C_SpecializationInfo, { "GetCombatConfigIDForSpecGroup", "GetActiveSpecGroup" })
 		and HasFunctions(C_Traits, { "GetGroupDisplayInfoByTreeID", "GetConfigInfo", "GetTreeInfo", "GetTreeNodes", "GetNodeInfo", "GetEntryInfo", "GetDefinitionInfo", "GetSubTreeInfo", "GetConditionInfo" })
-		and HasFunctions(PlayerSpellsUtil, { "TogglePlayerSpellsFrame" }) and HasTables(PlayerSpellsUtil, { "FrameTabs" })
-		and HasFunctions(TalentMicroButton, { "Enable", "Disable", "UpdateMicroButton" })
 		and HasFunctions(C_XMLUtil, { "GetTemplateInfo" })
 end
 
@@ -2944,12 +2820,11 @@ local function HasTalentFramePieces(frame)
 		and HasTables(frame.ClassCurrencyDisplay.CurrentAmountContainer, { "CurrencyAmount" })
 end
 
--- Once the talent window has loaded: the window, its talent frame, and the game's talent
+-- Once the talent window has loaded: its talent frame, and the game's talent
 -- button code the plan's buttons are drawn with.
 local function HasTalentWindowPieces()
 	local window = PlayerSpellsFrame
-	if not (HasFunctions(window, { "SetTab", "GetTab", "IsInspecting", "ForceMaximize", "SetMinimized", "SetMinimizingEnabled", "HookScript" })
-		and window.talentTabID and window.spellBookTabID and HasTalentFramePieces(window.TalentsFrame)
+	if not (type(window) == "table" and HasTalentFramePieces(window.TalentsFrame)
 		and HasFunctions(TabSystemOwnerMixin, { "SetTab" }) and HasFunctions(TabSystemButtonMixin, { "GetTabText" })
 		and HasFunctions(TalentButtonArtMixin, { "ApplyVisualState", "UpdateStateBorder", "SetBorderAtlas", "GetSquareEdgeDiameterOffset", "GetChoiceEdgeDiameterOffset", "GetCircleEdgeDiameterOffset" })
 		and HasTables(TalentButtonArtMixin, { "ArtSet" })
@@ -2992,7 +2867,6 @@ events:SetScript("OnEvent", Guard(function(_, event, ...)
 				return
 			end
 			NormalizeSaved()
-			InstallBelowLevel()
 			if select(2, C_AddOns.IsAddOnLoaded(TALENT_UI)) then
 				InstallTalentWindow()
 			end

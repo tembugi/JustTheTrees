@@ -621,29 +621,8 @@ Test("an error in a click on the plan turns it off and shows the character's tal
 	Equal(#game.chat, 1, "chat lines")
 end)
 
-Test("below the talent level an error greys the menu button out again", function()
-	local game = NewGame({ belowTalentLevel = true })
-	Equal(TalentMicroButton:IsEnabled(), true, "button before")
-	local show = ShowUIPanel
-	function ShowUIPanel()
-		error("show failed")
-	end
-	game:PressTalentButton()
-	ShowUIPanel = show
-	game:RunTimers()
-	Equal(#game.errors, 1, "errors reported")
-	Equal(LastChat(game):find(TURNED_OFF, 1, true) ~= nil, true, "chat")
-	Equal(TalentMicroButton:IsEnabled(), false, "button greyed out")
-	Equal(game:WindowMinimizingEnabled(), true, "minimizing back on")
-	TalentMicroButton:UpdateMicroButton()
-	game:PressTalentButton()
-	Equal(TalentMicroButton:IsEnabled(), false, "button after the game updates it")
-	Equal(game:WindowShown(), false, "window after the game updates the button")
-	Equal(#game.errors .. " " .. #game.chat, "1 1", "errors and chat lines after")
-end)
-
 Test("if the talent window lacks a piece the plan needs, chat says so once and the plan adds nothing", function()
-	local game = NewGame({ belowTalentLevel = true, changeGame = function()
+	local game = NewGame({ changeGame = function()
 		local GetTemplateInfo = C_XMLUtil.GetTemplateInfo
 		function C_XMLUtil.GetTemplateInfo(name)
 			if name ~= "TalentFrameGateTemplate" then
@@ -651,11 +630,9 @@ Test("if the talent window lacks a piece the plan needs, chat says so once and t
 			end
 		end
 	end })
-	Equal(TalentMicroButton:IsEnabled(), true, "button before the talent window loads")
 	game:OpenTalentWindow()
 	game:RunTimers()
 	Equal(game.frame.calculatorTabID, nil, "the plan's tab")
-	Equal(TalentMicroButton:IsEnabled(), false, "button greyed out")
 	game:CloseTalentWindow()
 	game:OpenTalentWindow()
 	Same(game.chat, { NORMAL_FONT_COLOR:WrapTextInColorCode("Just the Trees") .. ": " .. GameChanged("the talent window") }, "chat")
@@ -664,14 +641,11 @@ end)
 
 Test("if the game lacks a piece the addon needs, chat says so once and the addon adds nothing", function()
 	local saved = { format = 1, characters = { ["Ana-Realm"] = { build = Plan(Node(A1, 2, 0)) } }, old = true }
-	local game = NewGame({ belowTalentLevel = true, saved = saved, changeGame = function()
+	local game = NewGame({ saved = saved, changeGame = function()
 		C_XMLUtil = nil
 	end })
-	Equal(TalentMicroButton:IsEnabled(), false, "button stays greyed out")
 	Equal(JustTheTreesDB, saved, "saved plans")
 	Equal(JustTheTreesDB.old, true, "saved plans left as they were")
-	game.belowTalentLevel = false
-	TalentMicroButton:UpdateMicroButton()
 	game:OpenTalentWindow()
 	Equal(game.frame.calculatorTabID, nil, "the plan's tab")
 	Same(game.chat, { NORMAL_FONT_COLOR:WrapTextInColorCode("Just the Trees") .. ": " .. GameChanged("the game") }, "chat")
@@ -697,74 +671,17 @@ Test("closing and opening the window keeps the plan on screen", function()
 	Equal(game:GamePiecesShown(), 0, "the game's pieces")
 end)
 
--- Below the talent level the menu button is clickable, and a click opens the game's own
--- talent window. No plan tab is opened there.
-Test("below the talent level the menu button opens the talents tab, not the plan", function()
+-- Below the talent level the game greys out the talent button and keeps its talents tab shut.
+-- Opening it from the addon taints the window and the action bars, so the addon leaves it.
+Test("below the talent level the talent button and window stay as the game has them", function()
 	local game = NewGame({ belowTalentLevel = true })
-	Equal(TalentMicroButton:IsEnabled(), true, "button enabled")
+	Equal(TalentMicroButton:IsEnabled(), false, "button greyed out")
+	TalentMicroButton:Enable()
 	game:PressTalentButton()
+	game:PressTalentKey()
 	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
-	Equal(game.frame.calculatorMode == true, false, "no plan tab")
-end)
-
--- The window must not be drawn on the spell book page. The switch happens in the same open, so
--- right after the click the window already shows talents, maximized, with no frame run in between.
-Test("below the talent level the talents tab is set in the same open, with no frame in between", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:PressTalentButton()
-	Equal(game:WindowShown(), true, "window shown before any frame runs")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab before any frame runs")
-	Equal(game:WindowMinimized(), false, "maximized before any frame runs")
-end)
-
--- A size change on a shown window hides and shows it again, and the open runs twice. The window
--- must open on talents without that, with minimizing back on afterwards.
-Test("below the talent level the window opens on talents without a hide and show to resize it", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:PressTalentButton()
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
-	Equal(game:WindowCycles(), 0, "hide and show cycles")
-	Equal(game:WindowMinimizingEnabled(), true, "minimizing is back on")
-	game:RunTimers()
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab after the frame")
-	Equal(game:WindowMinimizingEnabled(), true, "minimizing is on after the frame")
-end)
-
--- The spell book opens minimized. The talents tab can't be minimized, so the window must be
--- maximized before the switch, or the switch restarts the window on its spell book page.
-Test("below the talent level with the spell book minimized, the talents tab still opens", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:OpenTalentWindow()
-	game:RunTimers()
-	Equal(game:WindowMinimized(), true, "the spell book opened minimized")
-	game:PressTalentButton()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
-	Equal(game:WindowMinimized(), false, "maximized for the talents tab")
-end)
-
-Test("below the talent level a second click on the menu button closes the talents tab", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:PressTalentButton()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown after the first click")
-	game:PressTalentButton()
-	game:RunTimers()
-	Equal(game:WindowShown(), false, "closed by the second click")
-end)
-
-Test("below the talent level a click on the menu button while the spell book shows opens the talents tab", function()
-	local game = NewGame({ belowTalentLevel = true })
-	game:OpenTalentWindow()
-	game:RunTimers()
-	Equal(game:WindowTab(), PlayerSpellsFrame.spellBookTabID, "the spell book page is showing")
-	game:PressTalentButton()
-	game:RunTimers()
-	Equal(game:WindowShown(), true, "window shown")
-	Equal(game:WindowTab(), PlayerSpellsFrame.talentTabID, "talents tab")
+	Equal(game:WindowShown(), false, "window after a click and the talent key")
+	Equal(#game.errors .. " " .. #game.chat, "0 0", "errors and chat lines")
 end)
 
 Test("shift-click puts the talent's link in chat", function()

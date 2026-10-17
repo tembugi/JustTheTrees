@@ -18,7 +18,8 @@ A mock talent planner in its own "Just the Trees" tab on the talent window: sepa
 - Gates: the game's gate on the first locked row of each tree, with the points the plan still needs; hovering it shows the game's gate sentence.
 - Clicks as on the game's buttons: left adds a point, right removes one, shift-click puts the talent's link in chat.
 - Inspecting another player while the tab is open hands the window to their talents. The tab is off while inspecting.
-- Turned off after an error (the shared Errors rule): the plan's tab is hidden, not greyed out (the user's choice), the character's own talents come back, and below the talent level the talents menu button is greyed out again, as the game draws it, until /reload.
+- Turned off after an error (the shared Errors rule): the plan's tab is hidden, not greyed out (the user's choice), and the character's own talents come back, until /reload.
+- Below the talent level the talent button and window stay as the game has them (the talents tab shut). The user dropped the below-level open (2026-10-17): opening the window from the addon tainted it and the action bars, so actions were blocked in combat, and a secure button pressing the game's buttons was rejected.
 - The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Just the Trees" in the game's gold title font in the center of that row, both only on the calculator tab.
 - Chat names talents by their links.
 - Search marks come from the talent window's own search and use the game's search mark (`TalentButtonSearchIconTemplate`: the icon for each match type, its pulse and its hover text), on talent buttons and on each choice. "Not on your action bar" marks are left out: planned talents are not on the character's bars.
