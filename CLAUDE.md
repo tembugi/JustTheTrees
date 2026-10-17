@@ -34,7 +34,7 @@ A mock talent planner in its own "Just the Trees" tab on the talent window: sepa
 ## Rows
 - Row 1 of a tree is open. Row n needs 5 × (n − 1) points spent in the rows above it, in the same tree (row 2 = 5, row 3 = 10, row 4 = 15, …). Points in the same row, deeper rows or other trees do not count.
 - A point cannot be removed when that would leave a deeper talent short, or break an arrow requirement.
-- This is a fixed rule in the code (`ApplyRowRequirements`), not read from the client.
+- This is a fixed rule in the code (`ApplyRowRequirements`), not read from the client: in game a gate's `spentAmountRequired` is what the character still needs (the talent window shows it as is), so reading it would read the character's points. The game's data (wago, 2026-10-17) has 5 more per row in every class tree; a few talents sit a few units off their row, so talents within 150 of a row (rows are 600 apart) belong to it.
 
 ## Saves
 - Per character (name-realm), two independent plans: Primary (`build`) and Secondary (`secondary`). They are the calculator's own slots, not the character's spec slots, and not tied to a spec id.

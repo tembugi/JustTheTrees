@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "1.1.0"
+local VERSION = "1.1.1"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -13,8 +13,10 @@ local PLAN_BUDGET = MAX_LEVEL - FIRST_TALENT_LEVEL + 1
 -- Row 1 of a tree is open. Every row after it needs this many more points spent in the
 -- rows above it, in that same tree. A fixed rule, not read from the client.
 local POINTS_PER_ROW = 5
--- Talents whose posY differs by no more than this sit on the same row.
-local ROW_TOLERANCE = 0.5
+-- Talents whose posY differs by no more than this sit on the same row. The game's rows are 600
+-- apart (BaseRowHeight in Blizzard_ClassTalentsFrame.lua), and its data puts some talents a few
+-- units off their row.
+local ROW_TOLERANCE = 150
 
 local TALENT_UI = "Blizzard_PlayerSpells"
 -- Checked at load with the game's other pieces (see Loading).

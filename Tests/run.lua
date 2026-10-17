@@ -348,6 +348,15 @@ Test("row 1 is open, and each row after it needs 5 more points in the rows above
 	Equal(game:State(A7), "Gated", "row 4 after 10 points")
 end)
 
+Test("a talent a few units off its row belongs to that row", function()
+	local game = NewGame()
+	game:OpenPlan()
+	-- C5 sits 10 below row 2 in the stand-in's tree, as some of the game's talents do.
+	game:ClickTimes(C1, 5)
+	Equal(game:State(C5), "Selectable", "C5 after 5 points in row 1")
+	Equal(game:State(C4), "Selectable", "C4, on the same row")
+end)
+
 Test("points in other trees and in the same row don't open a row", function()
 	local game = NewGame()
 	game:OpenPlan()
