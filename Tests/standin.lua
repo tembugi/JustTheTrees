@@ -281,6 +281,15 @@ end
 function Widget:SetTextColor(r, g, b)
 	self.textColor = { r, g, b }
 end
+-- A button's highlight texture, made by SetHighlightAtlas.
+function Widget:SetHighlightAtlas(atlas, blendMode)
+	self.highlightTexture = self.highlightTexture or self:CreateTexture()
+	self.highlightTexture:SetAtlas(atlas)
+	self.highlightTexture.blendMode = blendMode
+end
+function Widget:GetHighlightTexture()
+	return self.highlightTexture
+end
 function Widget:EnableMouse(enabled)
 	self.mouseEnabled = enabled == true
 end
@@ -728,7 +737,19 @@ return function(options)
 		return GameTooltip
 	end
 	-- Sounds and fonts the addon passes on. ASSUMED values: the tests only tell them apart.
-	SOUNDKIT = { IG_CHARACTER_INFO_TAB = 841 }
+	SOUNDKIT = {
+		IG_CHARACTER_INFO_TAB = 841, IG_MAINMENU_OPTION_CHECKBOX_ON = 856,
+		UI_CLASS_TALENT_NODE_SPEND = 1, UI_CLASS_TALENT_NODE_SPEND_MAJOR = 2, UI_CLASS_TALENT_NODE_REFUND = 3,
+		UI_CLASS_TALENT_APPLY_CHANGES = 4,
+	}
+	-- ClassTalentUtil.GetSpendSoundKitID (Blizzard_ClassTalentUtil.lua). ASSUMED: one entry type
+	-- spends with the major sound; the game's table isn't copied, the tests only tell them apart.
+	ClassTalentUtil = {}
+	function ClassTalentUtil.GetSpendSoundKitID(entryType)
+		return entryType == "major" and SOUNDKIT.UI_CLASS_TALENT_NODE_SPEND_MAJOR or SOUNDKIT.UI_CLASS_TALENT_NODE_SPEND
+	end
+	TALENT_FRAME_APPLY_BUTTON_TEXT = "Apply Changes"
+	TALENT_FRAME_DISCARD_CHANGES_BUTTON_TOOLTIP = "Undo Pending Changes"
 	function PlaySound(soundKit)
 		game.sounds[#game.sounds + 1] = soundKit
 	end
@@ -1149,6 +1170,10 @@ return function(options)
 			frame.GateText:Hide()
 		end,
 		UIPanelButtonNoTooltipTemplate = function() end,
+		-- IconButtonTemplate (IconButtonTemplate.xml): its Icon, set up from no keys.
+		IconButtonTemplate = function(frame)
+			frame.Icon = frame:CreateTexture()
+		end,
 		WowStyle1DropdownTemplate = function() end,
 	}
 	-- Nothing for a template the game doesn't have (XMLUtilDocumentation.lua: MayReturnNothing).

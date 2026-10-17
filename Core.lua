@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "1.0.4"
+local VERSION = "1.1.0"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -1465,8 +1465,11 @@ end
 -- The game's tree frame spans the whole window but its bottom row, tabs and search box
 -- included. Only its talents' area, from just below the tabs (which reach 4 into the
 -- border) down, is shielded, just under the plan's board, so the game's see-through
--- talents can't be hovered or clicked.
-local TREE_LEVEL = 500
+-- talents can't be hovered or clicked. The game lays its talents out by row, the top row
+-- highest: up to 502 above the tree's frame (ClassTalentsFrameMixin:GetFrameLevelForButton,
+-- TotalFrameLevelSpread 500, plus TalentButtonBaseMixin's frameLevelOffset 2). Its pop-ups sit
+-- at 2000.
+local TREE_LEVEL = 600
 
 local function TreeShield(frame)
 	local shield = CreateFrame("Frame", nil, frame)
@@ -1967,8 +1970,7 @@ local function EnsureBoard(frame)
 	if frame.calculatorBoard then
 		return frame.calculatorBoard
 	end
-	-- Over the game's tree, as big as it and clipped like it. The game's talent buttons sit up
-	-- to about 150 above the tree's frame and its pop-ups at 2000; the board sits between.
+	-- Over the game's tree, as big as it and clipped like it, above its talents (TREE_LEVEL).
 	local parent = frame.ButtonsParent
 	local board = CreateFrame("Frame", nil, frame)
 	board:SetAllPoints(parent)
@@ -2108,11 +2110,19 @@ end
 
 -- Save is on while the plan differs from the saved one, Load Saved while a saved
 -- plan differs from the one on screen, and Clear while the plan has points.
+-- As the game's UpdateConfigButtonsState: Apply Changes is on and glows while the plan differs
+-- from the saved one; the undo arrow shows then, and the reset arrow otherwise, on while the
+-- plan has points (IconButtonMixin:SetEnabledState).
 local function UpdatePlanButtons(frame)
 	local matches = PlanMatchesSaved()
-	frame.calculatorSaveButton:SetEnabled(not matches)
-	frame.calculatorLoadButton:SetEnabled(HasSavedPlan() and not matches)
-	frame.calculatorClearButton:SetEnabled(next(ns.ranks) ~= nil)
+	local apply = frame.calculatorSaveButton
+	apply:SetEnabled(not matches)
+	apply.YellowGlow:SetShown(not matches)
+	frame.calculatorLoadButton:SetShown(not matches)
+	local reset = frame.calculatorClearButton
+	reset:SetShown(matches)
+	reset:SetEnabled(next(ns.ranks) ~= nil)
+	reset.Icon:SetDesaturated(next(ns.ranks) == nil)
 end
 
 -- A tree header's planned points: the same tree the row gates count each talent in.
@@ -2217,7 +2227,7 @@ local function ReportPlanFit(frame, changes)
 	if #changes > MAX_LISTED_CHANGES then
 		text = text .. " and " .. (#changes - MAX_LISTED_CHANGES) .. " more"
 	end
-	Say(SlotText(ns.slot or 1) .. " plan changed to fit the current talents: " .. text .. ". Press Save to keep it.")
+	Say(SlotText(ns.slot or 1) .. " plan changed to fit the current talents: " .. text .. ". Press " .. TALENT_FRAME_APPLY_BUTTON_TEXT .. " to keep it.")
 end
 
 --------------------------------------------------------------------------------
@@ -2274,6 +2284,14 @@ local function ApplyLocalChange(frame, originID, poolChanged)
 	RememberCurrentPlan()
 end
 
+-- The sounds the game's class talent buttons play (ClassTalentButtonSpendMixin and
+-- ClassTalentButtonSelectMixin): a spend by the talent's entry type, and the refund sound.
+local function PlaySpendSound(frame, entryID)
+	local configID = frame:GetConfigID()
+	local entry = configID and entryID and entryID > 0 and C_Traits.GetEntryInfo(configID, entryID)
+	PlaySound(ClassTalentUtil.GetSpendSoundKitID(entry and entry.type))
+end
+
 local function ChangeRank(frame, nodeID, delta)
 	if not ShowingCalculator(frame) then
 		return
@@ -2302,6 +2320,11 @@ local function ChangeRank(frame, nodeID, delta)
 			ranks = nextRank,
 			entryID = entryID,
 		}
+	end
+	if delta > 0 then
+		PlaySpendSound(frame, ns.ranks[nodeID].entryID)
+	else
+		PlaySound(SOUNDKIT.UI_CLASS_TALENT_NODE_REFUND)
 	end
 	ApplyLocalChange(frame, nodeID, (unspentBefore == 0) ~= (Unspent() == 0))
 end
@@ -2332,6 +2355,7 @@ local function ChooseEntry(frame, nodeID, entryID)
 		ranks = stored and stored.ranks or 1,
 		entryID = chosen,
 	}
+	PlaySpendSound(frame, chosen)
 	ApplyLocalChange(frame, nodeID, (unspentBefore == 0) ~= (Unspent() == 0))
 end
 
@@ -2387,6 +2411,8 @@ local function SaveBuild(frame)
 	build.nodes = nodes
 	RememberCurrentPlan()
 	UpdatePlanButtons(frame)
+	-- The sound the game plays as it applies talent changes (commitSound).
+	PlaySound(SOUNDKIT.UI_CLASS_TALENT_APPLY_CHANGES)
 	Say(string.format("%s plan saved (%d/%d points).", SlotText(ns.slot or 1), TotalSpent(), PLAN_BUDGET))
 end
 
@@ -2397,7 +2423,7 @@ local function ClearBuild(frame)
 		ShowPlan(frame)
 	end
 	RememberCurrentPlan()
-	Say(SlotText(ns.slot or 1) .. " plan cleared. Your saved plan is unchanged until you press Save.")
+	Say(SlotText(ns.slot or 1) .. " plan cleared. Your saved plan is unchanged until you press " .. TALENT_FRAME_APPLY_BUTTON_TEXT .. ".")
 end
 
 local function LoadSavedPlan(frame)
@@ -2431,38 +2457,109 @@ local function SelectSlot(frame, slot)
 	end
 end
 
-local function PlanButton(frame, text, tooltipText, onClick)
-	local button = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
-	button:SetSize(120, 22)
-	button:SetText(text)
-	button:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + SHIELD_LEVEL + 2)
-	button:SetScript("OnClick", function()
+-- Undo Pending Changes: back to the saved plan, or to none if the slot was never saved.
+local function UndoPlan(frame)
+	if HasSavedPlan() then
+		LoadSavedPlan(frame)
+	else
+		ClearBuild(frame)
+	end
+end
+
+-- The plan's own buttons in the game's controls' places, made like them: Apply Changes like
+-- ApplyButton (with its YellowGlow), the undo and reset arrows like UndoButton and ResetButton
+-- (IconButtonTemplate). They sit just above the shields over the game's controls.
+local function PlanControlLevel(frame)
+	return math.max(frame.ApplyButton:GetFrameLevel(), frame.ResetButton:GetFrameLevel(), frame.UndoButton:GetFrameLevel()) + SHIELD_LEVEL + 2
+end
+
+local function OnPlanButtonClick(frame, onClick)
+	return function()
+		-- UIButtonMixin:OnClick's sound.
+		PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
 		Guarded(onClick, frame)
-	end)
-	button:SetScript("OnEnter", Guard(function(self)
+	end
+end
+
+local function PlanButtonTooltip(title, text)
+	return Guard(function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip_SetTitle(GameTooltip, text)
-		GameTooltip_AddNormalLine(GameTooltip, tooltipText)
+		if title then
+			GameTooltip_SetTitle(GameTooltip, title)
+			GameTooltip_AddNormalLine(GameTooltip, text)
+		else
+			GameTooltip_AddHighlightLine(GameTooltip, text)
+		end
 		GameTooltip:Show()
-	end))
+	end)
+end
+
+local GLOW_PARTS = {
+	{ key = "Left", atlas = "newplayertutorial-yellowGlow-redbutton-left" },
+	{ key = "Right", atlas = "newplayertutorial-yellowGlow-redbutton-right" },
+	{ key = "Middle", atlas = "newplayertutorial-yellowGlow-redbutton-middle" },
+}
+
+local function CreateApplyButton(frame)
+	local button = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
+	button:SetSize(frame.ApplyButton:GetSize())
+	button:SetPoint("CENTER", frame.ApplyButton, "CENTER")
+	button:SetFrameLevel(PlanControlLevel(frame))
+	button:SetText(TALENT_FRAME_APPLY_BUTTON_TEXT)
+	button:SetScript("OnClick", OnPlanButtonClick(frame, SaveBuild))
+	button:SetScript("OnEnter", PlanButtonTooltip(TALENT_FRAME_APPLY_BUTTON_TEXT, "Stores the plan on screen for this character. It does not change your talents."))
 	button:SetScript("OnLeave", GameTooltip_Hide)
-	button:Disable()
+	-- The ApplyButton's YellowGlow (Camelot's Blizzard_ClassTalentsFrame.xml).
+	local glow = CreateFrame("Frame", nil, button)
+	glow:SetHeight(1)
+	glow:SetPoint("LEFT", -12, 0)
+	glow:SetPoint("RIGHT", 12, 0)
+	local parts = {}
+	for _, part in ipairs(GLOW_PARTS) do
+		local texture = glow:CreateTexture(nil, "ARTWORK")
+		texture:SetAtlas(part.atlas, part.key ~= "Middle")
+		texture:SetBlendMode("ADD")
+		parts[part.key] = texture
+	end
+	local left, right, middle = parts.Left, parts.Right, parts.Middle
+	left:SetPoint("LEFT")
+	right:SetPoint("RIGHT")
+	middle:SetPoint("TOPLEFT", left, "TOPRIGHT")
+	middle:SetPoint("BOTTOMRIGHT", right, "BOTTOMLEFT")
+	glow:Hide()
+	button.YellowGlow = glow
 	button:Hide()
 	return button
 end
 
--- Save, Load Saved and Clear take the Apply button's place, and the Primary/Secondary
--- menu sits above them.
+-- An arrow button in ResetButton's place (LEFT of ApplyButton's RIGHT, 14 over), as
+-- IconButtonMixin:OnLoad sets one up from its atlas.
+local function CreateArrowButton(frame, apply, atlas, onClick, tooltip)
+	local button = CreateFrame("Button", nil, frame, "IconButtonTemplate")
+	button:SetSize(25, 25)
+	button:SetPoint("LEFT", apply, "RIGHT", 14, 0)
+	button:SetFrameLevel(PlanControlLevel(frame))
+	button.Icon:SetAtlas(atlas, true)
+	button:SetHighlightAtlas(atlas, "ADD")
+	local highlight = button:GetHighlightTexture()
+	highlight:SetPoint("TOPLEFT", button.Icon, "TOPLEFT")
+	highlight:SetPoint("BOTTOMRIGHT", button.Icon, "BOTTOMRIGHT")
+	button:SetScript("OnClick", OnPlanButtonClick(frame, onClick))
+	button:SetScript("OnEnter", tooltip)
+	button:SetScript("OnLeave", GameTooltip_Hide)
+	button:Hide()
+	return button
+end
+
+-- Apply Changes, the undo arrow and the reset arrow take the game's controls' places, and the
+-- Primary/Secondary menu sits above them.
 local function CreatePlanControls(frame)
-	local load = PlanButton(frame, "Load Saved", "Puts your saved plan back on screen. Unsaved changes are lost.", LoadSavedPlan)
-	load:SetPoint("CENTER", frame.ApplyButton, "CENTER", 0, 0)
-	local save = PlanButton(frame, "Save", "Stores the plan on screen for this character. It does not change your talents.", SaveBuild)
-	save:SetPoint("RIGHT", load, "LEFT", -6, 0)
-	local clear = PlanButton(frame, "Clear", "Removes every point from the plan on screen. Press Save to store that.", ClearBuild)
-	clear:SetPoint("LEFT", load, "RIGHT", 6, 0)
-	frame.calculatorSaveButton = save
-	frame.calculatorLoadButton = load
-	frame.calculatorClearButton = clear
+	local apply = CreateApplyButton(frame)
+	frame.calculatorSaveButton = apply
+	frame.calculatorLoadButton = CreateArrowButton(frame, apply, "talents-button-undo", UndoPlan,
+		PlanButtonTooltip(nil, TALENT_FRAME_DISCARD_CHANGES_BUTTON_TOOLTIP))
+	frame.calculatorClearButton = CreateArrowButton(frame, apply, "talents-button-reset", ClearBuild,
+		PlanButtonTooltip("Clear", "Removes every point from the plan on screen. Press " .. TALENT_FRAME_APPLY_BUTTON_TEXT .. " to store that."))
 
 	-- The game's dropdown, part of the talent window, so it hides and moves with it and its
 	-- menu closes with it. The talent buttons sit at level 1000 and up; 2000 keeps the dropdown
@@ -2487,8 +2584,6 @@ end
 
 local function ShowPlanControls(frame)
 	frame.calculatorSaveButton:Show()
-	frame.calculatorLoadButton:Show()
-	frame.calculatorClearButton:Show()
 	frame.calculatorSlotDropdown:Show()
 	-- The menu's button shows the slot on screen.
 	frame.calculatorSlotDropdown:GenerateMenu()
@@ -2766,7 +2861,7 @@ local TALENT_FRAME_PARTS = {
 	"ClassCurrencyDisplay", "BackgroundBorder", "Background", "ButtonsParent",
 }
 -- The game's templates the plan's pieces are made from.
-local TEMPLATES = { "ClassTalentsFrameTabTemplate", "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
+local TEMPLATES = { "ClassTalentsFrameTabTemplate", "IconButtonTemplate", "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
 
 local function HasTalentFramePieces(frame)
 	return HasFunctions(frame, TALENT_FRAME_FUNCTIONS) and HasTables(frame, TALENT_FRAME_PARTS)
@@ -2785,7 +2880,10 @@ local function HasTalentWindowPieces()
 		and HasTables(TalentButtonArtMixin, { "ArtSet" })
 		and HasFunctions(TalentButtonUtil, { "CalculateIconTextureFromInfo", "SetSpendText", "TranslateNodePositionsToAnchorPositions", "GetStyleForSearchMatchType" })
 		and HasTables(TalentButtonUtil, { "BaseVisualState" })
-		and HasFunctions(TalentUtil, { "GetTalentName" }) and HasFunctions(SpellSearchUtil, { "IsActionBarMatchType" }))
+		and HasFunctions(TalentUtil, { "GetTalentName" }) and HasFunctions(ClassTalentUtil, { "GetSpendSoundKitID" })
+		and type(TALENT_FRAME_APPLY_BUTTON_TEXT) == "string" and type(TALENT_FRAME_DISCARD_CHANGES_BUTTON_TOOLTIP) == "string"
+		and HasTables(_G, { "SOUNDKIT" }) and SOUNDKIT.UI_CLASS_TALENT_NODE_REFUND and SOUNDKIT.UI_CLASS_TALENT_APPLY_CHANGES
+		and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON and HasFunctions(SpellSearchUtil, { "IsActionBarMatchType" }))
 	then
 		return false
 	end
