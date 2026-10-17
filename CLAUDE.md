@@ -18,6 +18,7 @@ A mock talent planner in its own "Just the Trees" tab on the talent window: sepa
 - Gates: the game's gate on the first locked row of each tree, with the points the plan still needs; hovering it shows the game's gate sentence.
 - Clicks as on the game's buttons: left adds a point, right removes one, shift-click puts the talent's link in chat.
 - Inspecting another player while the tab is open hands the window to their talents. The tab is off while inspecting.
+- The tab is the addon's own button after Primary and Secondary, made from the game's tab template, never one of the game's tabs: a tab added to the game's tab bar made every open of the talent window run the game's code tainted (taint log, 2026-10-17). Under the plan the game's tree and controls stay as the game drew them, see-through and shielded from the mouse; the game's selected tab is drawn unselected, and a click on any game tab brings the game's tree back. The addon never calls the game's tab, tree or window functions.
 - Turned off after an error (the shared Errors rule): the plan's tab is hidden, not greyed out (the user's choice), and the character's own talents come back, until /reload.
 - Below the talent level the talent button and window stay as the game has them (the talents tab shut). The user dropped the below-level open (2026-10-17): opening the window from the addon tainted it and the action bars, so actions were blocked in combat, and a secure button pressing the game's buttons was rejected.
 - The version shows as `v<VERSION>` on the left end of the unspent points row, and the title "Just the Trees" in the game's gold title font in the center of that row, both only on the calculator tab.
@@ -42,7 +43,7 @@ A mock talent planner in its own "Just the Trees" tab on the talent window: sepa
 - Own class only.
 
 ## Tests
-- `Tests/run.lua` runs the saved-plan tests and the plan tests. Both play the unchanged `Core.lua` in `Tests/standin.lua`: Forever's talent window, copied from `wow-ui-source`, over a small made-up class tree (three trees with arrows, a choice, a tiered talent, two talents that shut each other out, an empty row, and the character's own points, which the plan must never read or change).
+- `Tests/run.lua` runs the saved-plan tests and the plan tests. Both play the unchanged `Core.lua` in `Tests/standin.lua`: Forever's talent window, copied from `wow-ui-source`, over a small made-up class tree (three trees with arrows, a choice, a tiered talent, two talents that shut each other out, an empty row, and the character's own points, which the plan must never read or change). The stand-in records the game's own tab, tree and window code, and the game's widget scripts, that the addon's code runs; a test plays a whole session and expects none.
 
 ## Logo
 `Logo/JustTheTrees-logo.svg`: a gold double ring and a 3 x 4 grid of talent squares in gold, green and grey with two arrows, redrawn from the PNG on CurseForge, whose colours were measured.

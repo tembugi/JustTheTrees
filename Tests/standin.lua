@@ -29,6 +29,49 @@ end
 
 local game -- the game the current test plays
 
+-- Taint, as far as the stand-in can tell it. Code from Core.lua runs at game.addonDepth > 0.
+-- Called from there, a game function that writes the game's own state, or a script the game
+-- set on its own widget, would run tainted in the game: each is recorded in game.taints.
+-- Widget calls that run no Lua (alpha, mouse, a texture shown) taint nothing and aren't recorded.
+local function FromAddon(level)
+	local info = debug.getinfo(level + 1, "S")
+	return info ~= nil and info.source:find("Core.lua", 1, true) ~= nil
+end
+
+local function AsAddon(func)
+	return function(...)
+		game.addonDepth = game.addonDepth + 1
+		local results = { pcall(func, ...) }
+		game.addonDepth = game.addonDepth - 1
+		if not results[1] then
+			error(results[2], 0)
+		end
+		return unpack(results, 2, table.maxn(results))
+	end
+end
+
+local function OwnedByAddon(widget)
+	while widget do
+		if widget.byAddon then
+			return true
+		end
+		widget = widget.parent
+	end
+	return false
+end
+
+-- A game function that writes the game's own state. Called on the addon's own widget, it
+-- writes only the addon's state.
+local function GameWrite(name, func)
+	return function(...)
+		local owner = ...
+		if game.addonDepth > 0 and not (type(owner) == "table" and OwnedByAddon(owner)) then
+			game.taints[#game.taints + 1] = name
+		end
+		return func(...)
+	end
+end
+
 local function Mixin(object, ...)
 	for index = 1, select("#", ...) do
 		for key, value in pairs((select(index, ...))) do
@@ -115,6 +158,9 @@ end
 local function RunVisibilityScripts(widget, name)
 	local script = widget.scripts[name]
 	if script then
+		if game.addonDepth > 0 and widget.gameScripts and widget.gameScripts[name] and not OwnedByAddon(widget) then
+			game.taints[#game.taints + 1] = name .. " of a game widget"
+		end
 		script(widget)
 	end
 	for _, child in ipairs(widget.children) do
@@ -148,12 +194,21 @@ function Widget:RegisterEvent(event)
 	frames[#frames + 1] = self
 end
 function Widget:SetScript(name, func)
+	if func and FromAddon(2) then
+		func = AsAddon(func)
+	else
+		self.gameScripts = self.gameScripts or {}
+		self.gameScripts[name] = func ~= nil
+	end
 	self.scripts[name] = func
 end
 function Widget:GetScript(name)
 	return self.scripts[name]
 end
 function Widget:HookScript(name, func)
+	if FromAddon(2) then
+		func = AsAddon(func)
+	end
 	local old = self.scripts[name]
 	self.scripts[name] = old and function(...)
 		old(...)
@@ -225,6 +280,12 @@ function Widget:GetText()
 end
 function Widget:SetTextColor(r, g, b)
 	self.textColor = { r, g, b }
+end
+function Widget:EnableMouse(enabled)
+	self.mouseEnabled = enabled == true
+end
+function Widget:IsMouseEnabled()
+	return self.mouseEnabled == true
 end
 function Widget:SetEnabled(enabled)
 	self.enabled = not not enabled
@@ -435,6 +496,9 @@ return function(options)
 	game = {
 		chat = {},
 		errors = {},
+		taints = {},
+		addonDepth = 0,
+		sounds = {},
 		writes = {},
 		timers = {},
 		cvars = {},
@@ -461,6 +525,7 @@ return function(options)
 	end
 	-- hooksecurefunc runs the hook after the original, with the same arguments.
 	function hooksecurefunc(owner, name, hook)
+		hook = AsAddon(hook)
 		local original = owner[name]
 		assert(type(original) == "function", "hooking a missing function: " .. tostring(name))
 		owner[name] = function(...)
@@ -655,6 +720,20 @@ return function(options)
 		self.owner = owner
 		self.lines = {}
 	end
+	function GameTooltip:IsOwned(owner)
+		return self.owner == owner
+	end
+	-- FrameUtil.lua: the game tooltip, or its gamepad version (not played here).
+	function GetAppropriateTooltip()
+		return GameTooltip
+	end
+	-- Sounds and fonts the addon passes on. ASSUMED values: the tests only tell them apart.
+	SOUNDKIT = { IG_CHARACTER_INFO_TAB = 841 }
+	function PlaySound(soundKit)
+		game.sounds[#game.sounds + 1] = soundKit
+	end
+	GameFontHighlight = { name = "GameFontHighlight" }
+	GameFontNormal = { name = "GameFontNormal" }
 	function GameTooltip:GetOwner()
 		return self.owner
 	end
@@ -1084,6 +1163,7 @@ return function(options)
 	function CreateFrame(frameType, _, parent, template)
 		local widgetType = frameType == "DropdownButton" and "Button" or frameType
 		local frame = NewWidget(widgetType, parent)
+		frame.byAddon = FromAddon(2)
 		if frameType == "DropdownButton" then
 			Mixin(frame, DropdownButtonMixin)
 		end
@@ -1189,11 +1269,6 @@ return function(options)
 	function TabSystemButtonMixin:GetTabID()
 		return self.tabID
 	end
-	-- TabSystemButtonArtMixin:SetTabSelected, without the art.
-	function TabSystemButtonMixin:SetTabSelected(isSelected)
-		self.isSelected = isSelected
-		self:SetEnabled(not self:IsForceDisabled() and not isSelected)
-	end
 	function TabSystemButtonMixin:OnClick()
 		self:GetParent():SetTab(self:GetTabID(), true)
 	end
@@ -1222,16 +1297,88 @@ return function(options)
 		return primaryText
 	end
 
+	-- TabSystemButtonArtMixin (TabSystemTemplates.lua), without the square mode and the icon.
+	TabSystemButtonArtMixin = {}
+	function TabSystemButtonArtMixin:HandleRotation()
+		if self.isTabOnTop then
+			for _, texture in ipairs(self.RotatedTextures) do
+				texture:ClearAllPoints()
+				texture:SetRotation(math.pi)
+			end
+			self.RightActive:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", -7, 0)
+			self.LeftActive:SetPoint("BOTTOMRIGHT")
+			self.Right:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", -6, 0)
+			self.Left:SetPoint("BOTTOMRIGHT")
+		end
+	end
+	function TabSystemButtonArtMixin:SetTabSelected(isSelected)
+		self.isSelected = isSelected
+		self.Left:SetShown(not isSelected)
+		self.Middle:SetShown(not isSelected)
+		self.Right:SetShown(not isSelected)
+		self.LeftActive:SetShown(isSelected)
+		self.MiddleActive:SetShown(isSelected)
+		self.RightActive:SetShown(isSelected)
+		self:SetNormalFontObject(isSelected and self.selectedFontObject or self.unselectedFontObject)
+		self:SetEnabled(not isSelected and not self:IsForceDisabled())
+		local tooltip = GetAppropriateTooltip()
+		if tooltip:IsOwned(self) then
+			tooltip:Hide()
+		end
+	end
+	function TabSystemButtonArtMixin:SetTabWidth(width)
+		self:SetWidth(width)
+	end
+	function TabSystemButtonArtMixin:SetTabHeight(height)
+		for _, texture in ipairs(self.RotatedTextures) do
+			texture:SetHeight(height)
+		end
+	end
+	function TabSystemButtonArtMixin:IsForceDisabled()
+		return false, nil
+	end
+	-- ClassTalentsFrameTabTemplate (Camelot's Blizzard_ClassTalentsFrame.xml) over
+	-- TabSystemButtonTemplate and TabSystemButtonArtTemplate (TabSystemTemplates.xml).
+	local TAB_TEXTURES = { "LeftActive", "RightActive", "MiddleActive", "Left", "Right", "Middle", "LeftHighlight", "MiddleHighlight", "RightHighlight" }
+	local function ApplyTabTemplate(tab)
+		tab.RotatedTextures = {}
+		for _, key in ipairs(TAB_TEXTURES) do
+			tab[key] = tab:CreateTexture()
+			tab.RotatedTextures[#tab.RotatedTextures + 1] = tab[key]
+		end
+		tab.Text = tab:CreateFontString()
+		tab:SetSize(10, 32)
+		tab.isTabOnTop = true
+		tab.selectedFontObject = GameFontHighlight
+		tab.unselectedFontObject = GameFontNormal
+		tab.tooltipAnchor, tab.tooltipAnchorX, tab.tooltipAnchorY = "ANCHOR_RIGHT", -12, -6
+		Mixin(tab, TabSystemButtonArtMixin, TabSystemButtonMixin, ClassTalentsFrameTabMixin)
+		tab:SetScript("OnClick", tab.OnClick)
+	end
+	TabSystemButtonArtMixin.SetTabSelected = GameWrite("tab SetTabSelected", TabSystemButtonArtMixin.SetTabSelected)
+	for _, name in ipairs({ "Init", "SetTabEnabled", "UpdateTabText" }) do
+		TabSystemButtonMixin[name] = GameWrite("tab " .. name, TabSystemButtonMixin[name])
+	end
+	ClassTalentsFrameTabMixin.SetIsActive = GameWrite("tab SetIsActive", ClassTalentsFrameTabMixin.SetIsActive)
+	TEMPLATES.ClassTalentsFrameTabTemplate = ApplyTabTemplate
+
 	local TabSystemMixin = {}
 	function TabSystemMixin:AddTab(tabText)
 		local tabID = #self.tabs + 1
 		local tab = NewWidget("Button", self)
-		tab.Text = tab:CreateFontString()
-		Mixin(tab, TabSystemButtonMixin, ClassTalentsFrameTabMixin)
-		tab:SetScript("OnClick", tab.OnClick)
+		ApplyTabTemplate(tab)
 		self.tabs[tabID] = tab
+		tab:HandleRotation()
 		tab:Init(tabID, tabText)
 		return tabID
+	end
+	function TabSystemMixin:GetTabWidthConstraints()
+		return self.minTabWidth, self.maxTabWidth
+	end
+	function TabSystemMixin:PlayTabSelectSound()
+		if self.tabSelectSound then
+			PlaySound(self.tabSelectSound)
+		end
 	end
 	function TabSystemMixin:SetTabSelectedCallback(callback)
 		self.tabSelectedCallback = callback
@@ -1592,6 +1739,18 @@ return function(options)
 		end)
 	end
 
+	for _, name in ipairs({ "SetTab", "RefreshGates", "UpdateConfigButtonsState", "InitializeActiveSpec",
+		"HandlePlayerTalentUpdate", "UpdateTabs", "SetDisabledOverlayShown", "RefreshConfigID" }) do
+		if TalentFrameMixin[name] then
+			TalentFrameMixin[name] = GameWrite("talent frame " .. name, TalentFrameMixin[name])
+		end
+	end
+	TabSystemOwnerMixin.SetTab = GameWrite("TabSystemOwnerMixin.SetTab", TabSystemOwnerMixin.SetTab)
+	TabSystemOwnerMixin.AddNamedTab = GameWrite("AddNamedTab", TabSystemOwnerMixin.AddNamedTab)
+	for _, name in ipairs({ "AddTab", "SetTabEnabled", "SetTabShown", "SetTabVisuallySelected", "MarkDirty" }) do
+		TabSystemMixin[name] = GameWrite("tab bar " .. name, TabSystemMixin[name])
+	end
+
 	local function NewTalentsFrame()
 		PlayerSpellsFrame = NewWidget("Frame", UIParent)
 		-- The game's window starts hidden (hidden="true" in Camelot/Blizzard_PlayerSpellsFrame.xml).
@@ -1640,6 +1799,9 @@ return function(options)
 		frame.DisabledOverlay:Hide()
 		frame.TabSystem = Mixin(NewWidget("Frame", frame), TabSystemMixin)
 		frame.TabSystem.tabs = {}
+		-- The tab bar's keys (Camelot's Blizzard_ClassTalentsFrame.xml, TabSystemTemplate).
+		frame.TabSystem.minTabWidth, frame.TabSystem.maxTabWidth, frame.TabSystem.spacing = 150, 200, 1
+		frame.TabSystem.tabSelectSound = SOUNDKIT.IG_CHARACTER_INFO_TAB
 		frame:InitializeTabSystem()
 		-- A test can take a piece away, as a later patch might.
 		if options.changeTalentWindow then
@@ -1667,6 +1829,8 @@ return function(options)
 	function HideUIPanel(frame)
 		frame:Hide()
 	end
+	ShowUIPanel = GameWrite("ShowUIPanel", ShowUIPanel)
+	HideUIPanel = GameWrite("HideUIPanel", HideUIPanel)
 	function CheckLoadPlayerSpellsFrame()
 		if not game.loadedAddOns["Blizzard_PlayerSpells"] then
 			game.frame = NewTalentsFrame()
@@ -1729,7 +1893,7 @@ return function(options)
 	end
 	JustTheTreesDB = options.saved
 	game.ns = {}
-	assert(loadfile("Core.lua"))("JustTheTrees", game.ns)
+	AsAddon(assert(loadfile("Core.lua")))("JustTheTrees", game.ns)
 	AddOnLoaded("JustTheTrees")
 
 	-- The talent window loads when the player first opens it.
@@ -1779,9 +1943,19 @@ return function(options)
 			tab.scripts.OnClick(tab, "LeftButton")
 		end
 	end
+	-- The plan's own tab, after the game's tabs.
+	function game:PlanTab()
+		return self.frame.calculatorTab
+	end
+	function game:ClickPlanTab()
+		local tab = self:PlanTab()
+		if tab:IsEnabled() then
+			tab.scripts.OnClick(tab, "LeftButton")
+		end
+	end
 	function game:OpenPlan()
 		self:OpenTalentWindow()
-		self:ClickTab(self.frame.calculatorTabID)
+		self:ClickPlanTab()
 	end
 	-- Runs frames until nothing is waiting. A callback queued by a callback runs in the next frame.
 	function game:RunTimers()
@@ -1885,7 +2059,11 @@ return function(options)
 		return self.frame.ClassCurrencyDisplay.calculatorLevelText:GetText()
 	end
 	-- What the game's own pieces show: its talent buttons, arrows and gates, and its controls.
+	-- The game's pieces the player can see: shown, and their tree not made see-through.
 	function game:GamePiecesShown()
+		if self.frame.ButtonsParent:GetAlpha() == 0 then
+			return 0
+		end
 		local shown = 0
 		for _, pool in ipairs({ self.frame.talentButtonCollection, self.frame.edgePool, self.frame.gatePool }) do
 			for widget in pool:EnumerateActive() do

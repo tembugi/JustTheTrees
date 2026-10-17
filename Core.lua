@@ -1438,72 +1438,37 @@ end
 -- The character's tree under the plan
 --------------------------------------------------------------------------------
 
--- Primary and Secondary use this same frame. Calculator behavior runs only
--- while its own tab is the one selected.
+-- Primary and Secondary use this same frame. Calculator behavior runs only while the
+-- plan is on screen.
 local function ShowingCalculator(frame)
-	return frame.calculatorMode and frame:GetTab() == frame.calculatorTabID
+	return frame.calculatorMode == true
 end
 
--- The talent buttons, arrows, gates and displays the game is using right now.
-local function EachTreeWidget(frame, visit)
-	for button in frame:EnumerateAllTalentButtons() do
-		visit(button)
-	end
-	for edge in frame.edgePool:EnumerateActive() do
-		visit(edge)
-	end
-	for gate in frame.gatePool:EnumerateActive() do
-		visit(gate)
-	end
-	for display in frame.talentDisplayFramePool:EnumerateActive() do
-		visit(display)
-	end
+-- The game's tree and controls stay as the game drew them, only out of sight under the
+-- plan: see-through, with the plan's board and shields taking the mouse. Alpha and mouse
+-- changes run none of the game's code, so its tree and controls carry on untainted.
+local GAME_CONTROLS = { "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec", "DisabledOverlay" }
+
+local function Shield(frame, region)
+	local shield = CreateFrame("Frame", nil, frame)
+	shield:SetAllPoints(region)
+	shield:SetFrameLevel(region:GetFrameLevel() + 10)
+	shield:EnableMouse(true)
+	shield:Hide()
+	return shield
 end
 
--- Hides one of the game's pieces while the plan is on screen, and remembers whether it
--- was shown. A piece the game shows again meanwhile is hidden again.
-local function HideWidget(frame, widget)
-	frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
-	if frame.calculatorHiddenWidgets[widget] == nil then
-		frame.calculatorHiddenWidgets[widget] = widget:IsShown()
+local function CoverClientTree(frame, covered)
+	frame.ButtonsParent:SetAlpha(covered and 0 or 1)
+	frame.calculatorShields = frame.calculatorShields or {}
+	for _, key in ipairs(GAME_CONTROLS) do
+		local control = frame[key]
+		frame.calculatorShields[key] = frame.calculatorShields[key] or Shield(frame, control)
+		frame.calculatorShields[key]:SetShown(covered)
+		control:SetAlpha(covered and 0 or 1)
 	end
-	if not widget.calculatorKeepHidden then
-		widget.calculatorKeepHidden = true
-		widget:HookScript("OnShow", Guard(function(self)
-			if ShowingCalculator(frame) then
-				frame.calculatorHiddenWidgets = frame.calculatorHiddenWidgets or {}
-				frame.calculatorHiddenWidgets[self] = true
-				self:Hide()
-			end
-		end))
-	end
-	widget:Hide()
-end
-
-local function HideClientTree(frame)
-	EachTreeWidget(frame, function(widget)
-		HideWidget(frame, widget)
-	end)
-end
-
--- The game can rebuild its tree while the calculator is open and put pieces back
--- in its pools. Only pieces the game still uses are shown again. Gates the game
--- refreshed meanwhile were skipped, since it draws gates only next to visible
--- buttons, so they are drawn again.
-local function ShowClientTree(frame)
-	local hidden = frame.calculatorHiddenWidgets
-	frame.calculatorHiddenWidgets = nil
-	if hidden then
-		EachTreeWidget(frame, function(widget)
-			if hidden[widget] ~= nil then
-				widget:SetShown(hidden[widget])
-			end
-		end)
-	end
-	if frame.calculatorGatesStale then
-		frame.calculatorGatesStale = nil
-		frame:RefreshGates()
-	end
+	-- The locked-spec overlay takes the mouse above everything (DisabledOverlay, enableMouse).
+	frame.DisabledOverlay:EnableMouse(not covered)
 end
 
 --------------------------------------------------------------------------------
@@ -1979,10 +1944,15 @@ local function EnsureBoard(frame)
 	if frame.calculatorBoard then
 		return frame.calculatorBoard
 	end
+	-- Over the game's tree, as big as it and clipped like it. The game's talent buttons sit up
+	-- to about 150 above the tree's frame and its pop-ups at 2000; the board sits between,
+	-- and takes the mouse so the game's see-through tree under it can't be clicked.
 	local parent = frame.ButtonsParent
-	local board = CreateFrame("Frame", nil, parent)
+	local board = CreateFrame("Frame", nil, frame)
 	board:SetAllPoints(parent)
-	board:SetFrameLevel(parent:GetFrameLevel() + 20)
+	board:SetFrameLevel(parent:GetFrameLevel() + 500)
+	board:SetClipsChildren(true)
+	board:EnableMouse(true)
 	frame.calculatorBoard = board
 	frame.calculatorNodes = {}
 	frame.calculatorEdges = {}
@@ -2233,17 +2203,6 @@ end
 -- Showing and changing the plan
 --------------------------------------------------------------------------------
 
--- The game's own controls for the character's talents: Apply, Undo, Reset, the spec
--- controls and the locked-spec overlay. The game shows them again as it updates.
-local function HideGameControls(frame)
-	frame.ApplyButton:Hide()
-	frame.ApplyButton:Disable()
-	frame.UndoButton:Hide()
-	frame.ResetButton:Hide()
-	frame.ActiveSpec:Hide()
-	frame.DisabledOverlay:Hide()
-end
-
 local function ShowPlan(frame)
 	if not next(ns.structure) then
 		RememberFrame(frame)
@@ -2254,8 +2213,7 @@ local function ShowPlan(frame)
 	else
 		SayFailed("Couldn't read the talent tree. Close and reopen the talent window.")
 	end
-	HideClientTree(frame)
-	HideGameControls(frame)
+	CoverClientTree(frame, true)
 	BuildBoard(frame)
 	ApplyPlanSearch(frame)
 	for nodeID in pairs(ns.structure) do
@@ -2529,73 +2487,92 @@ local function HidePlanControls(frame)
 	ShowCharacterTalentNumbers(frame)
 end
 
--- The game's controls back as the game would draw them. While inspecting, the game
--- keeps Apply hidden.
-local function ShowGameControls(frame)
-	frame.ApplyButton:SetShown(not frame:IsInspecting())
-	frame:UpdateConfigButtonsState()
-	frame:InitializeActiveSpec()
-end
-
 --------------------------------------------------------------------------------
 -- The tab
 --------------------------------------------------------------------------------
+
+-- The plan has its own tab after the game's Primary and Secondary tabs, made from the game's
+-- tab template. It is not one of the game's tabs: adding a tab to the game's tab bar writes
+-- the game's own tab data from the addon's code, and every open of the window then ran the
+-- talent window's code tainted. So the game's tab bar never hears of the plan. While the
+-- plan shows, the game's selected tab is drawn unselected and clickable, and a click on any
+-- game tab returns to the game's tree as any tab change does.
 
 -- The talent frame, once the plan's tab is on it.
 local installedFrame
 local enteringCalculator = false
 
--- The character's pieces were only hidden. Put them back without reloading the spec.
-local function RestoreSharedTree(frame)
-	frame.calculatorMode = false
-	ShowClientTree(frame)
-	if frame.calculatorBoard then
-		frame.calculatorBoard:Hide()
-	end
-	HidePlanControls(frame)
-	ShowGameControls(frame)
+-- A game tab drawn selected or not, as TabSystemButtonArtMixin:SetTabSelected draws it, with
+-- widget calls only: the tab's own selected state stays the game's.
+local function DrawGameTab(tab, selected)
+	tab.Left:SetShown(not selected)
+	tab.Middle:SetShown(not selected)
+	tab.Right:SetShown(not selected)
+	tab.LeftActive:SetShown(selected)
+	tab.MiddleActive:SetShown(selected)
+	tab.RightActive:SetShown(selected)
+	tab:SetNormalFontObject(selected and tab.selectedFontObject or tab.unselectedFontObject)
+	tab:SetEnabled(not selected and not tab:IsForceDisabled())
 end
 
--- Inspecting another player, from the inspect window or a talent link, fills this window
--- with their talents. The plan steps aside: the window's own tab is selected again
--- without loading the character's talents over theirs.
-local function LeaveForInspect(frame)
-	TabSystemOwnerMixin.SetTab(frame, frame:GetActiveTab())
-end
-
--- The window's own tab in place of the plan's.
-local function SwitchToGameTab(frame)
-	if frame:GetTab() ~= frame.calculatorTabID then
-		return
-	end
-	if frame:IsInspecting() then
-		LeaveForInspect(frame)
-	else
-		frame:SetTab(frame:GetActiveTab())
+-- While the plan shows, every game tab is drawn unselected; after, each as the game has it.
+local function DrawGameTabs(frame)
+	for _, tabID in ipairs(frame:GetTabSet()) do
+		local tab = frame.TabSystem:GetTabButton(tabID)
+		DrawGameTab(tab, tab.isSelected and not frame.calculatorMode)
 	end
 end
 
--- Opening the tab while inspecting is refused. The tab change is still running then, so
--- the switch back waits one frame.
-local function ReturnToActiveTab(frame)
-	RestoreSharedTree(frame)
-	C_Timer.After(0, function()
-		Guarded(SwitchToGameTab, frame)
-	end)
+-- The plan's tab, selected while the plan shows. Turned off while inspecting.
+local function DrawPlanTab(frame)
+	local tab = frame.calculatorTab
+	local inspecting = frame:IsInspecting()
+	tab.forceDisabled = inspecting
+	tab.errorReason = inspecting and "Not available while inspecting." or nil
+	tab:SetTabSelected(frame.calculatorMode == true)
+	tab.Text:SetText(inspecting and DISABLED_FONT_COLOR:WrapTextInColorCode(ADDON_TITLE) or ADDON_TITLE)
 end
 
-local function OpenCalculatorTab(frame)
-	-- The tab is turned off while inspecting, so this is only a safety net.
-	if frame:IsInspecting() then
-		ReturnToActiveTab(frame)
-		return
+-- The tab's size, as TabSystemButtonMixin:UpdateTabWidth sizes the game's tabs.
+local function SizePlanTab(frame, tab)
+	local minWidth, maxWidth = frame.TabSystem:GetTabWidthConstraints()
+	local width = tab.Left:GetWidth() + tab.Right:GetWidth() + 20
+	local textWidth = tab.Text:GetWidth() + (tab.textPadding or 0)
+	if width < textWidth then
+		width = textWidth + 10
 	end
-	if enteringCalculator then
+	if maxWidth and width > maxWidth then
+		width = maxWidth
+		textWidth = width - 10
+	end
+	if minWidth and width < minWidth then
+		width = minWidth
+		textWidth = width - 10
+	end
+	tab.Text:SetWidth(textWidth)
+	tab:SetTabWidth(width)
+	tab:SetTabHeight(tab:GetHeight())
+end
+
+-- The plan's tab, as TabSystemButtonMixin:OnEnter shows a turned-off tab's reason.
+local function ShowPlanTabTooltip(tab)
+	if tab.errorReason then
+		GameTooltip:SetOwner(tab, tab.tooltipAnchor, tab.tooltipAnchorX, tab.tooltipAnchorY)
+		GameTooltip_AddErrorLine(GameTooltip, tab.errorReason)
+		GameTooltip:Show()
+	end
+end
+
+local function EnterCalculator(frame)
+	if enteringCalculator or frame.calculatorMode or frame:IsInspecting() then
 		return
 	end
 	EnsureWorkingCopy()
 	enteringCalculator = true
 	frame.calculatorMode = true
+	frame.TabSystem:PlayTabSelectSound()
+	DrawPlanTab(frame)
+	DrawGameTabs(frame)
 	-- The tree is read each time the tab opens. Edits reuse what was read.
 	RememberFrame(frame)
 	ShowPlan(frame)
@@ -2603,84 +2580,65 @@ local function OpenCalculatorTab(frame)
 	enteringCalculator = false
 end
 
--- The calculator plans the player's own tree, so its tab is off while inspecting.
-local function UpdateCalculatorTab(frame)
-	local inspecting = frame:IsInspecting()
-	frame.TabSystem:SetTabEnabled(frame.calculatorTabID, not inspecting, inspecting and "Not available while inspecting." or nil)
+-- The game's tree back on screen, as the game left it.
+local function LeaveCalculator(frame)
+	frame.calculatorMode = false
+	CoverClientTree(frame, false)
+	if frame.calculatorBoard then
+		frame.calculatorBoard:Hide()
+	end
+	HidePlanControls(frame)
+	DrawPlanTab(frame)
+	DrawGameTabs(frame)
 end
 
--- Every hook here runs after Blizzard's own function and leaves that function in
--- place. hooksecurefunc keeps the addon's code out of the talent frame's own work,
--- so applying talents and switching specs run untainted.
+local function CreatePlanTab(frame)
+	local tab = CreateFrame("Button", nil, frame, "ClassTalentsFrameTabTemplate")
+	tab:SetFrameLevel(frame.TabSystem:GetFrameLevel())
+	tab:SetPoint("BOTTOMLEFT", frame.TabSystem, "BOTTOMRIGHT", frame.TabSystem.spacing or 0, 0)
+	tab:HandleRotation()
+	tab:SetText(ADDON_TITLE)
+	SizePlanTab(frame, tab)
+	tab:SetScript("OnClick", Guard(function()
+		EnterCalculator(frame)
+	end))
+	tab:SetScript("OnEnter", Guard(ShowPlanTabTooltip))
+	tab:SetScript("OnLeave", GameTooltip_Hide)
+	frame.calculatorTab = tab
+	DrawPlanTab(frame)
+end
+
+-- Every hook here runs after Blizzard's own function and leaves that function in place,
+-- and only reads the game's state or draws the plan. hooksecurefunc keeps the addon's code
+-- out of the talent frame's own work, so applying talents and switching specs run untainted.
 local function Install(frame)
-	if frame.calculatorTabID then
+	if frame.calculatorTab then
 		return
 	end
-
-	frame.calculatorTabID = frame:AddNamedTab(ADDON_TITLE)
 	installedFrame = frame
-	local calculatorTab = frame.TabSystem:GetTabButton(frame.calculatorTabID)
-	-- A selected spec tab is disabled, and that disabled state draws the lock. This tab
-	-- is not a spec, so its label is written again, without the lock or checkmark,
-	-- after the game writes it. Only a turned-off tab gets the disabled color.
-	hooksecurefunc(calculatorTab, "UpdateTabText", Guard(function(self)
-		local text = TabSystemButtonMixin.GetTabText(self)
-		if self:IsForceDisabled() then
-			text = DISABLED_FONT_COLOR:WrapTextInColorCode(text)
-		end
-		self.Text:SetText(text)
-	end))
+	CreatePlanTab(frame)
 	CreatePlanControls(frame)
 
-	-- Tab clicks run the SetTab the frame captured when it was made. That SetTab
-	-- calls TabSystemOwnerMixin.SetTab, so this hook sees every tab change.
-	-- It runs before the frame loads the new tab's config.
-	hooksecurefunc(TabSystemOwnerMixin, "SetTab", Guard(function(owner, tabID)
-		if owner ~= frame then
-			return
-		end
-		if tabID == frame.calculatorTabID then
-			OpenCalculatorTab(frame)
-		elseif frame.calculatorMode then
-			RestoreSharedTree(frame)
+	-- Any of the game's tab changes on this frame (a click on a game tab, the game switching
+	-- specs) runs TabSystemOwnerMixin.SetTab, so this hook sees them all.
+	hooksecurefunc(TabSystemOwnerMixin, "SetTab", Guard(function(owner)
+		if owner == frame and frame.calculatorMode then
+			LeaveCalculator(frame)
 		end
 	end))
-
-	hooksecurefunc(frame, "UpdateTabs", Guard(UpdateCalculatorTab))
+	-- The game draws its selected tab again as it updates the tabs (UpdateTabs, also from
+	-- HandlePlayerTalentUpdate).
+	hooksecurefunc(frame, "UpdateTabs", Guard(function(self)
+		if self.calculatorMode then
+			DrawGameTabs(self)
+		end
+	end))
+	-- Inspecting fills this window with another player's talents. The plan steps aside.
 	hooksecurefunc(frame, "UpdateInspecting", Guard(function(self)
-		UpdateCalculatorTab(self)
 		if self:IsInspecting() and self.calculatorMode then
-			LeaveForInspect(self)
+			LeaveCalculator(self)
 		end
-	end))
-
-	-- The calculator tab has no spec config, so SetTab shows the locked-spec overlay.
-	hooksecurefunc(frame, "SetDisabledOverlayShown", Guard(function(self, shown)
-		if shown and ShowingCalculator(self) then
-			self.DisabledOverlay:Hide()
-		end
-	end))
-
-	-- The character's tree can reload under the calculator. Its buttons stay hidden.
-	hooksecurefunc(frame, "InstantiateTalentButton", Guard(function(self, nodeID)
-		if ShowingCalculator(self) then
-			local button = self:GetTalentButtonByNodeID(nodeID)
-			if button then
-				HideWidget(self, button)
-			end
-		end
-	end))
-	hooksecurefunc(frame, "RefreshConfigID", Guard(function(self)
-		if ShowingCalculator(self) then
-			HideClientTree(self)
-		end
-	end))
-	-- The game drew no gates for its hidden buttons. ShowClientTree draws them again.
-	hooksecurefunc(frame, "RefreshGates", Guard(function(self)
-		if ShowingCalculator(self) then
-			self.calculatorGatesStale = true
-			HideClientTree(self)
-		end
+		DrawPlanTab(self)
 	end))
 
 	-- These put the character's point totals back on the currency display and tree headers.
@@ -2692,23 +2650,11 @@ local function Install(frame)
 	hooksecurefunc(frame, "RefreshClassCurrencyDisplay", KeepPlanNumbers)
 	hooksecurefunc(frame, "RefreshTreeHeaders", KeepPlanNumbers)
 
-	-- These show Undo, Reset and the spec controls again. The window updates them on
-	-- its own, for example on every aura change while it is open, so this stays light.
-	local KeepGameControlsHidden = Guard(function(self)
-		if ShowingCalculator(self) then
-			HideGameControls(self)
-			HideClientTree(self)
-		end
-	end)
-	hooksecurefunc(frame, "UpdateConfigButtonsState", KeepGameControlsHidden)
-	hooksecurefunc(frame, "HandlePlayerTalentUpdate", KeepGameControlsHidden)
-
 	-- The window's search results are up to date whenever it displays them. It does so
 	-- at the end of its own updates, after any new arrows were drawn.
 	hooksecurefunc(frame, "DisplayFullSearchResults", Guard(function(self)
 		if ShowingCalculator(self) then
 			ApplyPlanSearch(self)
-			HideClientTree(self)
 		end
 	end))
 
@@ -2717,6 +2663,7 @@ local function Install(frame)
 			ShowPlan(self)
 		end
 	end))
+
 	-- Color blind mode marks the talents that can take a point, as in the talent
 	-- window's own UpdateColorBlindModeUI. Watched with CVAR_UPDATE on the addon's own
 	-- frame, not CVarCallbackRegistry: registering there writes the addon's callback into
@@ -2729,30 +2676,19 @@ local function Install(frame)
 		end
 	end
 	events:RegisterEvent("CVAR_UPDATE")
-
-	UpdateCalculatorTab(frame)
 end
 
 --------------------------------------------------------------------------------
 -- Turning off
 --------------------------------------------------------------------------------
 
--- The talent window as the game draws it: the plan's tab hidden and the character's own
--- talents on screen. The error may have come in the middle of a tab change, so the switch
--- to the window's own tab waits one frame.
-local function PutBackTalentWindow(frame)
-	frame.TabSystem:SetTabShown(frame.calculatorTabID, false)
-	if frame.calculatorMode then
-		RestoreSharedTree(frame)
-	end
-	C_Timer.After(0, function()
-		xpcall(SwitchToGameTab, CallErrorHandler, frame)
-	end)
-end
-
+-- The talent window as the game draws it: the plan's tab gone and the game's tree back.
 PutBack = function()
 	if installedFrame then
-		PutBackTalentWindow(installedFrame)
+		if installedFrame.calculatorMode then
+			LeaveCalculator(installedFrame)
+		end
+		installedFrame.calculatorTab:Hide()
 	end
 end
 
@@ -2799,23 +2735,21 @@ end
 -- The talent frame's functions the plan hooks or calls, and the parts it hides, covers or
 -- draws on.
 local TALENT_FRAME_FUNCTIONS = {
-	"AddNamedTab", "GetTab", "SetTab", "GetActiveTab", "IsInspecting", "UpdateTabs", "UpdateInspecting",
-	"SetDisabledOverlayShown", "InstantiateTalentButton", "RefreshConfigID", "RefreshGates",
-	"RefreshClassCurrencyDisplay", "RefreshTreeHeaders", "UpdateConfigButtonsState", "HandlePlayerTalentUpdate",
-	"DisplayFullSearchResults", "InitializeActiveSpec", "EnumerateAllTalentButtons", "GetTalentButtonByNodeID",
+	"GetTabSet", "IsInspecting", "UpdateTabs", "UpdateInspecting", "RefreshClassCurrencyDisplay",
+	"RefreshTreeHeaders", "DisplayFullSearchResults", "EnumerateAllTalentButtons", "GetTalentButtonByNodeID",
 	"GetButtonSize", "AnchorGate", "GetConfigID", "GetTalentTreeID", "GetTreeInfo", "GetPanOffset",
 	"GetSearchMatchTypeForEntry", "ShouldHideSingleRankNumbers", "GetTraitTreeName", "HookScript",
 }
 local TALENT_FRAME_PARTS = {
-	"TabSystem", "edgePool", "gatePool", "talentDisplayFramePool", "ApplyButton", "UndoButton", "ResetButton",
-	"ActiveSpec", "DisabledOverlay", "ClassCurrencyDisplay", "BackgroundBorder", "Background", "ButtonsParent",
+	"TabSystem", "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec", "DisabledOverlay",
+	"ClassCurrencyDisplay", "BackgroundBorder", "Background", "ButtonsParent",
 }
 -- The game's templates the plan's pieces are made from.
-local TEMPLATES = { "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
+local TEMPLATES = { "ClassTalentsFrameTabTemplate", "TalentFrameGateTemplate", "TalentButtonSearchIconTemplate", "UIPanelButtonNoTooltipTemplate", "WowStyle1DropdownTemplate" }
 
 local function HasTalentFramePieces(frame)
 	return HasFunctions(frame, TALENT_FRAME_FUNCTIONS) and HasTables(frame, TALENT_FRAME_PARTS)
-		and HasFunctions(frame.TabSystem, { "GetTabButton", "SetTabEnabled", "SetTabShown" })
+		and HasFunctions(frame.TabSystem, { "GetTabButton", "GetTabWidthConstraints", "PlayTabSelectSound" })
 		and HasTables(frame.ClassCurrencyDisplay, { "UnspentLabel", "Border", "CurrentAmountContainer" })
 		and HasTables(frame.ClassCurrencyDisplay.CurrentAmountContainer, { "CurrencyAmount" })
 end
@@ -2825,7 +2759,7 @@ end
 local function HasTalentWindowPieces()
 	local window = PlayerSpellsFrame
 	if not (type(window) == "table" and HasTalentFramePieces(window.TalentsFrame)
-		and HasFunctions(TabSystemOwnerMixin, { "SetTab" }) and HasFunctions(TabSystemButtonMixin, { "GetTabText" })
+		and HasFunctions(TabSystemOwnerMixin, { "SetTab" })
 		and HasFunctions(TalentButtonArtMixin, { "ApplyVisualState", "UpdateStateBorder", "SetBorderAtlas", "GetSquareEdgeDiameterOffset", "GetChoiceEdgeDiameterOffset", "GetCircleEdgeDiameterOffset" })
 		and HasTables(TalentButtonArtMixin, { "ArtSet" })
 		and HasFunctions(TalentButtonUtil, { "CalculateIconTextureFromInfo", "SetSpendText", "TranslateNodePositionsToAnchorPositions", "GetStyleForSearchMatchType" })
