@@ -1447,12 +1447,32 @@ end
 -- The game's tree and controls stay as the game drew them, only out of sight under the
 -- plan: see-through, with the plan's board and shields taking the mouse. Alpha and mouse
 -- changes run none of the game's code, so its tree and controls carry on untainted.
-local GAME_CONTROLS = { "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec", "DisabledOverlay" }
+-- Each control gets a shield just above it and its own buttons; the plan's controls sit
+-- above the shields (PlanButton). The locked-spec overlay spans the whole window, so it gets
+-- no shield: it only stops taking the mouse.
+local GAME_CONTROLS = { "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec" }
+local SHIELD_LEVEL = 3
 
 local function Shield(frame, region)
 	local shield = CreateFrame("Frame", nil, frame)
 	shield:SetAllPoints(region)
-	shield:SetFrameLevel(region:GetFrameLevel() + 10)
+	shield:SetFrameLevel(region:GetFrameLevel() + SHIELD_LEVEL)
+	shield:EnableMouse(true)
+	shield:Hide()
+	return shield
+end
+
+-- The game's tree frame spans the whole window but its bottom row, tabs and search box
+-- included. Only its talents' area, from just below the tabs (which reach 4 into the
+-- border) down, is shielded, just under the plan's board, so the game's see-through
+-- talents can't be hovered or clicked.
+local TREE_LEVEL = 500
+
+local function TreeShield(frame)
+	local shield = CreateFrame("Frame", nil, frame)
+	shield:SetPoint("TOPLEFT", frame.BackgroundBorder, "TOPLEFT", 0, -4)
+	shield:SetPoint("BOTTOMRIGHT", frame.ButtonsParent, "BOTTOMRIGHT")
+	shield:SetFrameLevel(frame.ButtonsParent:GetFrameLevel() + TREE_LEVEL - 10)
 	shield:EnableMouse(true)
 	shield:Hide()
 	return shield
@@ -1460,6 +1480,8 @@ end
 
 local function CoverClientTree(frame, covered)
 	frame.ButtonsParent:SetAlpha(covered and 0 or 1)
+	frame.calculatorTreeShield = frame.calculatorTreeShield or TreeShield(frame)
+	frame.calculatorTreeShield:SetShown(covered)
 	frame.calculatorShields = frame.calculatorShields or {}
 	for _, key in ipairs(GAME_CONTROLS) do
 		local control = frame[key]
@@ -1468,6 +1490,7 @@ local function CoverClientTree(frame, covered)
 		control:SetAlpha(covered and 0 or 1)
 	end
 	-- The locked-spec overlay takes the mouse above everything (DisabledOverlay, enableMouse).
+	frame.DisabledOverlay:SetAlpha(covered and 0 or 1)
 	frame.DisabledOverlay:EnableMouse(not covered)
 end
 
@@ -1945,14 +1968,12 @@ local function EnsureBoard(frame)
 		return frame.calculatorBoard
 	end
 	-- Over the game's tree, as big as it and clipped like it. The game's talent buttons sit up
-	-- to about 150 above the tree's frame and its pop-ups at 2000; the board sits between,
-	-- and takes the mouse so the game's see-through tree under it can't be clicked.
+	-- to about 150 above the tree's frame and its pop-ups at 2000; the board sits between.
 	local parent = frame.ButtonsParent
 	local board = CreateFrame("Frame", nil, frame)
 	board:SetAllPoints(parent)
-	board:SetFrameLevel(parent:GetFrameLevel() + 500)
+	board:SetFrameLevel(parent:GetFrameLevel() + TREE_LEVEL)
 	board:SetClipsChildren(true)
-	board:EnableMouse(true)
 	frame.calculatorBoard = board
 	frame.calculatorNodes = {}
 	frame.calculatorEdges = {}
@@ -2414,7 +2435,7 @@ local function PlanButton(frame, text, tooltipText, onClick)
 	local button = CreateFrame("Button", nil, frame, "UIPanelButtonNoTooltipTemplate")
 	button:SetSize(120, 22)
 	button:SetText(text)
-	button:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + 5)
+	button:SetFrameLevel(frame.ApplyButton:GetFrameLevel() + SHIELD_LEVEL + 2)
 	button:SetScript("OnClick", function()
 		Guarded(onClick, frame)
 	end)

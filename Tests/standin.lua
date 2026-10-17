@@ -1796,6 +1796,8 @@ return function(options)
 		frame.ResetButton = NewWidget("Button", frame)
 		frame.ActiveSpec = NewWidget("Frame", frame)
 		frame.DisabledOverlay = NewWidget("Frame", frame)
+		-- enableMouse="true" (Blizzard_SharedTalentFrame.xml).
+		frame.DisabledOverlay:EnableMouse(true)
 		frame.DisabledOverlay:Hide()
 		frame.TabSystem = Mixin(NewWidget("Frame", frame), TabSystemMixin)
 		frame.TabSystem.tabs = {}

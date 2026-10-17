@@ -241,11 +241,20 @@ Test("the game's own tree and controls step aside for the plan, and come back af
 	Equal(primary:IsEnabled(), false, "the selected game tab before")
 	game:ClickPlanTab()
 	Equal(game:GamePiecesShown(), 0, "the game's pieces under the plan")
-	for _, name in ipairs({ "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec", "DisabledOverlay" }) do
+	for _, name in ipairs({ "ApplyButton", "UndoButton", "ResetButton", "ActiveSpec" }) do
+		local shield = game.frame.calculatorShields[name]
 		Equal(game.frame[name]:GetAlpha(), 0, name .. " under the plan")
-		Equal(game.frame.calculatorShields[name]:IsShown(), true, name .. " shielded")
+		Equal(shield:IsShown() and shield:IsMouseEnabled(), true, name .. " shielded")
+		Equal(shield:GetFrameLevel() < game.frame.calculatorSaveButton:GetFrameLevel(), true, name .. "'s shield under the plan's buttons")
 	end
-	Equal(game.frame.calculatorBoard:IsMouseEnabled(), true, "the plan takes the mouse over the game's tree")
+	-- The locked-spec overlay spans the whole window: it only stops taking the mouse.
+	Equal(game.frame.DisabledOverlay:GetAlpha(), 0, "the locked-spec overlay under the plan")
+	Equal(game.frame.DisabledOverlay:IsMouseEnabled(), false, "the locked-spec overlay's mouse")
+	Equal(game.frame.calculatorShields.DisabledOverlay, nil, "no shield over the whole window")
+	local treeShield = game.frame.calculatorTreeShield
+	Equal(treeShield:IsShown() and treeShield:IsMouseEnabled(), true, "the game's talents shielded")
+	Equal(treeShield:GetFrameLevel() < game.frame.calculatorBoard:GetFrameLevel(), true, "the talents' shield under the plan")
+	Equal(game.frame.calculatorBoard:IsMouseEnabled(), false, "the plan's board leaves the mouse to what is around it")
 	Equal(game.frame.calculatorSaveButton:IsShown(), true, "Save shown")
 	Equal(game:PlanTab().isSelected, true, "the plan's tab selected")
 	Equal(primary.LeftActive:IsShown(), false, "the game's tab drawn unselected")
@@ -262,6 +271,8 @@ Test("the game's own tree and controls step aside for the plan, and come back af
 	Equal(game:GamePiecesShown(), pieces, "the game's pieces back")
 	Equal(game.frame.ApplyButton:GetAlpha(), 1, "Apply back")
 	Equal(game.frame.calculatorShields.ApplyButton:IsShown(), false, "Apply's shield gone")
+	Equal(game.frame.calculatorTreeShield:IsShown(), false, "the talents' shield gone")
+	Equal(game.frame.DisabledOverlay:IsMouseEnabled(), true, "the locked-spec overlay's mouse back")
 	Equal(game.frame.calculatorBoard:IsShown(), false, "plan hidden")
 	Equal(game.frame.calculatorSaveButton:IsShown(), false, "Save hidden")
 	Equal(game.frame.ClassCurrencyDisplay.CurrentAmountContainer.CurrencyAmount:IsShown(), true, "the character's points back")
