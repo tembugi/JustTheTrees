@@ -72,6 +72,182 @@ local function GameWrite(name, func)
 	end
 end
 
+--------------------------------------------------------------------------------
+-- Combat. While InCombatLockdown() is true, the game refuses a protected frame's protected
+-- methods when the addon's code calls them: the call does nothing and the game reports
+-- ADDON_ACTION_BLOCKED. The stand-in does the same and lists each refusal in game.blocked; the
+-- tests fail on any. ASSUMED: a call is refused whether or not it would change anything.
+--------------------------------------------------------------------------------
+
+-- The protected methods: those wow-ui-source marks IsProtectedFunction (forever,
+-- Blizzard_APIDocumentationGenerated), by the part of the widget API they are in.
+local PROTECTED_API = {
+	-- SimpleScriptRegionAPIDocumentation.lua and SimpleScriptRegionResizingAPIDocumentation.lua
+	ScriptRegion = {
+		"AdjustPointsOffset", "ClearAllPoints", "ClearPoint", "ClearPointsOffset", "EnableMouse",
+		"EnableMouseMotion", "EnableMouseWheel", "FocusEnter", "FocusExit", "MouseDown", "MouseUp",
+		"SetAllPoints", "SetCollapsesLayout", "SetHeight", "SetMouseClickEnabled",
+		"SetMouseMotionEnabled", "SetParent", "SetPassThroughButtons", "SetPoint", "SetPointsOffset",
+		"SetPropagateMouseClicks", "SetPropagateMouseMotion", "SetRoundLayoutToNearestPixel",
+		"SetSize", "SetWidth",
+	},
+	-- SimpleRegionAPIDocumentation.lua
+	Region = { "SetIgnoreParentScale", "SetScale" },
+	-- SimpleFrameAPIDocumentation.lua
+	Frame = {
+		"AddRoleset", "ClearAttribute", "ClearAttributes", "EnableGamePadButton",
+		"EnableGamePadStick", "EnableKeyboard", "Hide", "Lower", "Raise", "RemoveRoleset",
+		"ResizeToBoundsRect", "SetClampRectInsets", "SetClampedToScreen", "SetFixedFrameLevel",
+		"SetFixedFrameStrata", "SetFrameLevel", "SetFrameStrata", "SetHitRectInsets",
+		"SetHyperlinksEnabled", "SetID", "SetIgnoreParentScale", "SetRolesets", "SetScale",
+		"SetShown", "SetToplevel", "SetUsingParentLevel", "Show", "StartMoving", "StartSizing",
+		"StopMovingOrSizing",
+	},
+	-- SimpleButtonAPIDocumentation.lua
+	Button = { "Disable", "Enable", "RegisterForClicks", "RegisterForMouse", "SetEnabled" },
+}
+-- The parts each widget type has (BlizzardInterfaceResources, Resources/WidgetAPI.lua): a
+-- texture's Show, for one, is the region's and not protected.
+local PROTECTED_METHODS = {}
+for widgetType, parts in pairs({
+	Frame = { "ScriptRegion", "Frame" },
+	ModelScene = { "ScriptRegion", "Frame" },
+	Button = { "ScriptRegion", "Frame", "Button" },
+	Texture = { "ScriptRegion", "Region" },
+	MaskTexture = { "ScriptRegion", "Region" },
+	Line = { "ScriptRegion", "Region" },
+	FontString = { "ScriptRegion", "Region" },
+}) do
+	local set = {}
+	for _, part in ipairs(parts) do
+		for _, name in ipairs(PROTECTED_API[part]) do
+			set[name] = true
+		end
+	end
+	PROTECTED_METHODS[widgetType] = set
+end
+
+local FRAME_TYPES = { Frame = true, Button = true, ModelScene = true }
+
+-- Whether a widget is protected, as IsProtected says. A frame is protected explicitly
+-- (widget.protected: protected="true" in its XML or its template's, as SecureFrameTemplate in
+-- Blizzard_FrameXML/SecureTemplatesBase.xml, which the secure templates inherit), or because a
+-- frame under it is: seen in game (taint log, 2026-10-17), the action bars, protected only
+-- through their buttons, had SetPoint and ClearAllPoints blocked in combat. ASSUMED: a texture
+-- or text is protected when its frame is (regions have protected methods, and nothing else
+-- could make one protected).
+local function IsProtected(widget)
+	if widget.protected then
+		return true
+	end
+	if FRAME_TYPES[widget.widgetType] then
+		for _, child in ipairs(widget.children) do
+			if FRAME_TYPES[child.widgetType] and IsProtected(child) then
+				return true
+			end
+		end
+		return false
+	end
+	return widget.parent ~= nil and IsProtected(widget.parent)
+end
+
+-- Whose code is calling, as the game taints a run of code. A run is what the game starts: an
+-- event's handler, a frame's script, a timer, a call into Blizzard's code. It is the addon's
+-- from the moment it enters a function from Core.lua to the end of the run, Blizzard's code it
+-- calls on the way included; hooksecurefunc keeps its hook's taint inside the hook. An event the
+-- game sends during a run goes to each handler in a run of its own, which starts with the
+-- outer run's taint and gives none back: seen in game (taint log, 2026-10-17), the addon's
+-- ADDON_LOADED handler ran inside the player's first open of the talent window, and nothing
+-- after it in that open ran tainted. A call the tests make outside a run is the addon's when
+-- the addon's code is on the stack, or while game.addonDepth says the addon's code is running.
+-- Not modeled: taint the addon leaves in Blizzard's tables for later (game.taints and the
+-- game's taint log find that).
+local function AddonOnStack()
+	local level = 3
+	while true do
+		local info = debug.getinfo(level, "S")
+		if not info then
+			return false
+		end
+		if info.source == "@Core.lua" then
+			return true
+		end
+		level = level + 1
+	end
+end
+
+-- In combat, a debug hook marks the run tainted as it enters the addon's code (tail calls too,
+-- which leave no trace on the stack).
+local function OnCall()
+	local run = game.run
+	if run and not run.tainted then
+		local info = debug.getinfo(2, "S")
+		if info and info.source == "@Core.lua" then
+			run.tainted = true
+		end
+	end
+end
+
+local function AddonCalling()
+	return game.addonDepth > 0 or (game.run ~= nil and game.run.tainted) or AddonOnStack()
+end
+
+local function EndRun(run, ...)
+	if game.run == run then
+		game.run = nil
+	end
+	return ...
+end
+
+-- Runs func as the game runs code. Within a run, it is part of that run.
+local function Run(func, ...)
+	if game.run then
+		return func(...)
+	end
+	local run = { tainted = AddonOnStack() }
+	game.run = run
+	return EndRun(run, func(...))
+end
+
+local function EndRunApart(outer, ...)
+	game.run = outer
+	return ...
+end
+
+-- Runs an event's handler: a run of its own, even within another run.
+local function RunApart(func, ...)
+	local outer = game.run
+	game.run = { tainted = outer and outer.tainted or AddonOnStack() }
+	return EndRunApart(outer, func(...))
+end
+
+-- A hook's taint stays inside the hook (hooksecurefunc; ASSUMED for HookScript too, which the
+-- game also calls a secure hook).
+local function RunHook(hook, ...)
+	local run = game.run
+	local tainted = run and run.tainted
+	hook(...)
+	if run then
+		run.tainted = tainted
+	end
+end
+
+local protectedMethods = {} -- by widget type and name: the method, refused in combat
+local function ProtectedMethod(widgetType, name, method)
+	local byName = protectedMethods[widgetType] or {}
+	protectedMethods[widgetType] = byName
+	if not byName[name] then
+		byName[name] = function(self, ...)
+			if game.combat and IsProtected(self) and AddonCalling() then
+				game.blocked[#game.blocked + 1] = (self.name or "a protected " .. widgetType) .. ":" .. name .. "()"
+				return
+			end
+			return method(self, ...)
+		end
+	end
+	return byName[name]
+end
+
 local function Mixin(object, ...)
 	for index = 1, select("#", ...) do
 		for key, value in pairs((select(index, ...))) do
@@ -111,8 +287,13 @@ end
 
 local WidgetMeta = {
 	__index = function(widget, key)
-		if WIDGET_METHODS[rawget(widget, "widgetType")][key] then
-			return Widget[key] or Recorder(key)
+		local widgetType = rawget(widget, "widgetType")
+		if WIDGET_METHODS[widgetType][key] then
+			local method = Widget[key] or Recorder(key)
+			if PROTECTED_METHODS[widgetType] and PROTECTED_METHODS[widgetType][key] then
+				return ProtectedMethod(widgetType, key, method)
+			end
+			return method
 		end
 		return nil
 	end,
@@ -142,6 +323,9 @@ end
 
 function Widget:GetObjectType()
 	return self.widgetType
+end
+function Widget:IsProtected()
+	return IsProtected(self), self.protected == true
 end
 function Widget:GetParent()
 	return self.parent
@@ -212,7 +396,7 @@ function Widget:HookScript(name, func)
 	local old = self.scripts[name]
 	self.scripts[name] = old and function(...)
 		old(...)
-		func(...)
+		RunHook(func, ...)
 	end or func
 end
 
@@ -518,6 +702,8 @@ return function(options)
 		errors = {},
 		taints = {},
 		addonDepth = 0,
+		blocked = {}, -- what the game refused the addon in combat (ADDON_ACTION_BLOCKED)
+		combat = false,
 		sounds = {},
 		effects = {},
 		writes = {},
@@ -533,6 +719,15 @@ return function(options)
 		-- ASSUMED: the character's own points, which the plan must never read.
 		character = { [10] = { [1001] = 5, [1003] = 3, [2001] = 4 }, [11] = { [3001] = 2 } },
 	}
+
+	debug.sethook() -- a test that failed in combat may have left the hook on
+	function InCombatLockdown()
+		return game.combat
+	end
+	-- Secure code is code the addon doesn't run (see Combat).
+	function issecure()
+		return not AddonCalling()
+	end
 
 	print = function(...)
 		local parts = {}
@@ -550,9 +745,11 @@ return function(options)
 		local original = owner[name]
 		assert(type(original) == "function", "hooking a missing function: " .. tostring(name))
 		owner[name] = function(...)
-			local results = { original(...) }
-			hook(...)
-			return unpack(results)
+			return Run(function(...)
+				local results = { original(...) }
+				RunHook(hook, ...)
+				return unpack(results)
+			end, ...)
 		end
 	end
 	function IsModifiedClick(action)
@@ -657,7 +854,7 @@ return function(options)
 		for _, frame in ipairs(self.eventFrames[event] or {}) do
 			local script = frame.scripts.OnEvent
 			if script then
-				script(frame, event, ...)
+				RunApart(script, frame, event, ...)
 			end
 		end
 	end
@@ -1233,6 +1430,86 @@ return function(options)
 	end
 
 	UIParent = NewWidget("Frame", nil)
+	UIParent.name = "UIParent"
+
+	----------------------------------------------------------------------------
+	-- The action bars the talent window's OnShow and OnHide reach, protected through their
+	-- buttons (see Combat). Blizzard_ActionBar: Shared/MultiActionBars.xml (the bars, under
+	-- UIParent; their buttons' templates inherit ActionBarButtonTemplate, which inherits
+	-- SecureActionButtonTemplate), Shared/ActionBar.lua (ActionBar_OnLoad puts each button in a
+	-- container; SetShowGrid, UpdateFrameStrata, UpdateShownButtons), Shared/ActionButton.lua
+	-- (SetShowGrid, GetShowGrid) and Shared/MultiActionBars.lua (GetMultiActionBars,
+	-- MultiActionBar_ShowAllGrids and _HideAllGrids), cut to one button a bar. A Button stands in
+	-- for the CheckButton: the methods used here are a frame's.
+	----------------------------------------------------------------------------
+
+	ACTION_BUTTON_SHOW_GRID_REASON_EVENT = 2
+	ACTION_BUTTON_SHOW_GRID_REASON_SPELLCOLLECTION = 4
+	local ActionButtonMixin = {}
+	function ActionButtonMixin:GetShowGrid()
+		local showGridAttribute = self.showgrid
+		return showGridAttribute and showGridAttribute > 0 or false
+	end
+	function ActionButtonMixin:SetShowGrid(showGrid, reason)
+		assert(reason)
+		if issecure() and self:GetShowGrid() ~= showGrid then
+			local showGridAttribute = self.showgrid
+			if showGrid then
+				self.showgrid = bit.bor(showGridAttribute or 0, reason)
+			else
+				self.showgrid = bit.band(showGridAttribute or 0, bit.bnot(reason))
+			end
+		end
+	end
+	local ActionBarMixin = {}
+	function ActionBarMixin:SetShowGrid(showGrid, reason)
+		if reason == ACTION_BUTTON_SHOW_GRID_REASON_EVENT or reason == ACTION_BUTTON_SHOW_GRID_REASON_SPELLCOLLECTION then
+			if showGrid then
+				self.showAllButtons = bit.bor(self.showAllButtons or 0, reason)
+			else
+				self.showAllButtons = bit.band(self.showAllButtons or 0, bit.bnot(reason))
+			end
+		end
+		for _, actionButton in pairs(self.actionButtons) do
+			actionButton:SetShowGrid(showGrid, reason)
+		end
+		self:UpdateFrameStrata(showGrid, reason)
+		self:UpdateShownButtons()
+	end
+	-- ShouldRaise is true only while dragging a spell (reason EVENT); the window's reason isn't.
+	function ActionBarMixin:UpdateFrameStrata(_, _)
+		self:SetFrameStrata("MEDIUM")
+	end
+	-- ASSUMED: no button has an action, so a button shows only with its grid.
+	function ActionBarMixin:UpdateShownButtons()
+		for _, actionButton in pairs(self.actionButtons) do
+			actionButton:SetShown(actionButton:GetShowGrid())
+		end
+	end
+	local multiActionBars = {}
+	for index, name in ipairs({ "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarRight", "MultiBarLeft", "MultiBar5", "MultiBar6", "MultiBar7" }) do
+		local bar = Mixin(NewWidget("Frame", UIParent), ActionBarMixin)
+		bar.name = name
+		bar:Hide() -- hidden="true"
+		local container = NewWidget("Frame", bar)
+		local button = Mixin(NewWidget("Button", container), ActionButtonMixin)
+		button.name = name .. "Button1"
+		button.protected = true -- MultiBar<n>ButtonTemplate, from SecureActionButtonTemplate
+		button:Hide()
+		bar.actionButtons = { button }
+		_G[name] = bar
+		multiActionBars[index] = bar
+	end
+	function MultiActionBar_ShowAllGrids(reason)
+		for _, bar in ipairs(multiActionBars) do
+			bar:SetShowGrid(true, reason)
+		end
+	end
+	function MultiActionBar_HideAllGrids(reason)
+		for _, bar in ipairs(multiActionBars) do
+			bar:SetShowGrid(false, reason)
+		end
+	end
 
 	----------------------------------------------------------------------------
 	-- Tabs (TabSystemOwner.lua and TabSystemTemplates.lua) and the talent window's tabs
@@ -1791,8 +2068,14 @@ return function(options)
 				self:SetToDefaultAvailableTab()
 			end
 		end
+		-- PlayerSpellsFrameMixin:OnShow and OnHide (Blizzard_PlayerSpellsFrame.lua), cut to the
+		-- tabs and the action bars' grids.
 		window:SetScript("OnShow", function(self)
 			self:UpdateTabs()
+			MultiActionBar_ShowAllGrids(ACTION_BUTTON_SHOW_GRID_REASON_SPELLCOLLECTION)
+		end)
+		window:SetScript("OnHide", function()
+			MultiActionBar_HideAllGrids(ACTION_BUTTON_SHOW_GRID_REASON_SPELLCOLLECTION)
 		end)
 	end
 
@@ -1863,6 +2146,10 @@ return function(options)
 		frame.TabSystem.minTabWidth, frame.TabSystem.maxTabWidth, frame.TabSystem.spacing = 150, 200, 1
 		frame.TabSystem.tabSelectSound = SOUNDKIT.IG_CHARACTER_INFO_TAB
 		frame:InitializeTabSystem()
+		-- Its own OnShow (Camelot/ClassTalents/Blizzard_ClassTalentsFrame.xml, OnShow method),
+		-- cut to nothing: what it refreshes the stand-in leaves out. A HookScript on it is the
+		-- game's secure hook, after the game's script.
+		frame:SetScript("OnShow", function() end)
 		-- A test can take a piece away, as a later patch might.
 		if options.changeTalentWindow then
 			options.changeTalentWindow(frame)
@@ -1951,9 +2238,26 @@ return function(options)
 	if options.changeGame then
 		options.changeGame()
 	end
+	-- Combat, as the game has it: PLAYER_REGEN_DISABLED, then InCombatLockdown() is true until
+	-- combat ends, then PLAYER_REGEN_ENABLED. ASSUMED: the game sends PLAYER_REGEN_DISABLED just
+	-- before the lockdown starts and PLAYER_REGEN_ENABLED just after it ends.
+	function game:EnterCombat()
+		self:FireEvent("PLAYER_REGEN_DISABLED")
+		self.combat = true
+		debug.sethook(OnCall, "c")
+	end
+	function game:LeaveCombat()
+		self.combat = false
+		debug.sethook()
+		self:FireEvent("PLAYER_REGEN_ENABLED")
+	end
+	-- A /reload in combat loads the addon in combat.
+	if options.inCombat then
+		game:EnterCombat()
+	end
 	JustTheTreesDB = options.saved
 	game.ns = {}
-	AsAddon(assert(loadfile("Core.lua")))("JustTheTrees", game.ns)
+	Run(AsAddon(assert(loadfile("Core.lua"))), "JustTheTrees", game.ns)
 	AddOnLoaded("JustTheTrees")
 
 	-- The talent window loads when the player first opens it.
@@ -1962,19 +2266,19 @@ return function(options)
 			self.frame = NewTalentsFrame()
 			AddOnLoaded("Blizzard_PlayerSpells")
 		end
-		PlayerSpellsFrame:Show()
+		Run(PlayerSpellsFrame.Show, PlayerSpellsFrame)
 		return self.frame
 	end
 	function game:CloseTalentWindow()
-		PlayerSpellsFrame:Hide()
+		Run(PlayerSpellsFrame.Hide, PlayerSpellsFrame)
 	end
 	-- The talent hotkey (TOGGLETALENTS in Bindings_Camelot.xml) and the menu button.
 	function game:PressTalentKey()
-		PlayerSpellsUtil.ToggleClassTalentOrSpecFrame()
+		Run(PlayerSpellsUtil.ToggleClassTalentOrSpecFrame)
 	end
 	function game:PressTalentButton()
 		if TalentMicroButton:IsEnabled() then
-			TalentMicroButton.scripts.OnClick(TalentMicroButton, "LeftButton")
+			Run(TalentMicroButton.scripts.OnClick, TalentMicroButton, "LeftButton")
 		end
 	end
 	function game:WindowShown()
@@ -2000,7 +2304,7 @@ return function(options)
 	function game:ClickTab(tabID)
 		local tab = self:Tab(tabID)
 		if tab:IsEnabled() then
-			tab.scripts.OnClick(tab, "LeftButton")
+			Run(tab.scripts.OnClick, tab, "LeftButton")
 		end
 	end
 	-- The plan's own tab, after the game's tabs.
@@ -2010,7 +2314,7 @@ return function(options)
 	function game:ClickPlanTab()
 		local tab = self:PlanTab()
 		if tab:IsEnabled() then
-			tab.scripts.OnClick(tab, "LeftButton")
+			Run(tab.scripts.OnClick, tab, "LeftButton")
 		end
 	end
 	function game:OpenPlan()
@@ -2026,7 +2330,7 @@ return function(options)
 			end
 			self.timers = {}
 			for _, callback in ipairs(timers) do
-				callback()
+				Run(callback)
 			end
 		end
 	end
@@ -2041,7 +2345,7 @@ return function(options)
 	function game:Click(nodeID, mouseButton, choice)
 		local button = self:Button(nodeID, choice)
 		assert(button:IsVisible(), "clicking a hidden button")
-		button.scripts.OnClick(button, mouseButton or "LeftButton", true)
+		Run(button.scripts.OnClick, button, mouseButton or "LeftButton", true)
 	end
 	function game:ClickTimes(nodeID, times)
 		for _ = 1, times do
@@ -2069,7 +2373,7 @@ return function(options)
 	-- The talent's tooltip, one line per entry: "kind: text".
 	function game:Tooltip(nodeID, choice)
 		local button = self:Button(nodeID, choice)
-		button.scripts.OnEnter(button)
+		Run(button.scripts.OnEnter, button)
 		local lines = {}
 		for _, line in ipairs(GameTooltip.lines) do
 			if line.kind ~= "blank" then
@@ -2082,17 +2386,19 @@ return function(options)
 		local button = self.frame["calculator" .. name .. "Button"]
 		assert(button:IsVisible(), name .. " is hidden")
 		if button:IsEnabled() then
-			button.scripts.OnClick(button, "LeftButton")
+			Run(button.scripts.OnClick, button, "LeftButton")
 			return true
 		end
 		return false
 	end
 	function game:PickSlot(slot)
-		local dropdown = self.frame.calculatorSlotDropdown
-		dropdown:GenerateMenu()
-		local radio = dropdown.menu.radios[slot]
-		radio.setSelected(radio.data)
-		dropdown:GenerateMenu()
+		Run(function()
+			local dropdown = self.frame.calculatorSlotDropdown
+			dropdown:GenerateMenu()
+			local radio = dropdown.menu.radios[slot]
+			radio.setSelected(radio.data)
+			dropdown:GenerateMenu()
+		end)
 	end
 	-- The gates the plan shows, by their anchor talent: the points each still needs.
 	function game:Gates()

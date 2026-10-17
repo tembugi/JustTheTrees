@@ -13,7 +13,13 @@ local SOURCE = assert(io.open("Core.lua")):read("*a")
 local VERSION = SOURCE:match('\nlocal VERSION = "([^"]+)"')
 local PLAN_BUDGET = 51
 
-local NewGame = dofile("Tests/standin.lua")
+local StandIn = dofile("Tests/standin.lua")
+local games = {} -- the stand-in games the current test plays
+local function NewGame(options)
+	local game = StandIn(options)
+	games[#games + 1] = game
+	return game
+end
 
 -- Loads the addon with these saved plans, as the game does: the saved variables are set before
 -- the addon's ADDON_LOADED. Returns the saved plans after the addon has cleaned them.
@@ -45,7 +51,17 @@ end
 local failures = 0
 
 local function Test(name, func)
+	games = {}
 	local ok, problem = pcall(func)
+	-- Whatever the test checks, it fails if the game refused the addon anything in combat (see
+	-- Combat in Tests/standin.lua).
+	for _, game in ipairs(games) do
+		if #game.blocked > 0 then
+			problem = "ADDON_ACTION_BLOCKED in combat: " .. table.concat(game.blocked, ", ") .. (ok and "" or "; then " .. tostring(problem))
+			ok = false
+			break
+		end
+	end
 	if ok then
 		io.write("ok    " .. name .. "\n")
 	else
@@ -860,6 +876,65 @@ Test("hidden and empty talents aren't in the plan", function()
 	Equal(game.frame.calculatorNodes[game.HIDDEN_NODE], nil, "hidden talent")
 	Equal(game.frame.calculatorNodes[game.EMPTY_NODE] == nil or not game.frame.calculatorNodes[game.EMPTY_NODE]:IsShown(), true, "empty talent")
 	Equal(#game.errors, 0, "errors")
+end)
+
+-- Combat: the game refuses the addon's code moving, showing or hiding a protected frame then
+-- (see Combat in Tests/standin.lua); any refusal fails the test (see Test).
+
+Test("in combat the plan works as out of it, and nothing waits for combat to end", function()
+	-- A /reload in combat loads the addon in combat; the player then plays a whole session.
+	local game = NewGame({ inCombat = true })
+	game:OpenPlan()
+	Spend(game, { A1, 5, A3, 2 })
+	game:Click(A3, "RightButton")
+	game:Tooltip(A1)
+	game:PressPlanButton("Save")
+	game:RunTimers()
+	game:PickSlot(2)
+	game:PickSlot(1)
+	game.search[A1 .. ":nil"] = SpellSearchUtil.MatchType.ExactMatch
+	game.frame:DisplayFullSearchResults()
+	game:SetCVar("colorblindMode", true)
+	game.frame:HandlePlayerTalentUpdate()
+	game:CloseTalentWindow()
+	game:PressTalentKey()
+	game:ClickTab(game.frame.primarySpecTabID)
+	game:ClickPlanTab()
+	game.inspecting = true
+	game.frame:UpdateInspecting()
+	game.inspecting = false
+	game.frame:UpdateInspecting()
+	game:ClickPlanTab()
+	game:PressTalentButton()
+	game:RunTimers()
+	Equal(game:WindowShown(), false, "the window closed by the menu button")
+	game:LeaveCombat()
+	game:RunTimers()
+	Equal(#game.timers, 0, "work waiting after combat")
+	game:OpenPlan()
+	Equal(game:Ranks(A1), 5, "the plan after combat")
+	Equal(table.concat(game.taints, ", "), "", "the game's code run from the addon")
+	Equal(#game.errors, 0, "errors")
+	Equal(#game.chat .. " " .. tostring(LastChat(game):find("Primary plan saved", 1, true) ~= nil), "1 true", "chat: only the save's line")
+end)
+
+Test("the stand-in refuses the addon opening the talent window in combat, not the player", function()
+	local game = NewGame()
+	game:EnterCombat()
+	-- The player opens and closes the window: the game's own code shows the bars' grids.
+	game:PressTalentKey()
+	game:PressTalentKey()
+	Equal(#game.blocked, 0, "the player's open in combat")
+	-- Code the stand-in counts as the addon's: a chunk named after its file. Opening the window
+	-- from there runs the window's OnShow tainted, and the bars refuse it.
+	assert(load("ShowUIPanel(PlayerSpellsFrame)", "@Core.lua"))()
+	Equal(game.blocked[1], "MultiBarBottomLeft:SetFrameStrata()", "the addon's open in combat")
+	Equal(MultiBarBottomLeft.actionButtons[1]:IsShown(), false, "the button stays as the game had it")
+	game.blocked, game.taints = {}, {}
+	game:LeaveCombat()
+	assert(load("HideUIPanel(PlayerSpellsFrame)", "@Core.lua"))()
+	Equal(#game.blocked, 0, "out of combat")
+	game.taints = {}
 end)
 
 if failures > 0 then
