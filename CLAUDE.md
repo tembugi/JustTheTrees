@@ -27,7 +27,7 @@ A mock talent planner in its own "Just the Trees" tab on the talent window: sepa
 - Search marks come from the talent window's own search and use the game's search mark (`TalentButtonSearchIconTemplate`: the icon for each match type, its pulse and its hover text), on talent buttons and on each choice. "Not on your action bar" marks are left out: planned talents are not on the character's bars.
 
 ## Points
-- Budget: 51 points, one per level from 10 to 60 (`PLAN_BUDGET`).
+- Budget: one point per level from the game's first talent level to its top level (`PLAN_BUDGET`), read at load from `Constants.LevelConstsExposed.MIN_TALENT_LEVEL` and `GetMaxLevelForPlayerExpansion()`: 10 and 60 in Forever, so 51 points (/dump in game, 2026-10-17). A raised level cap follows.
 - "Level required" label: "-" until the first point is spent (the first point is spent at level 10), then 9 + points spent, capped at 60.
 - No level-locked talents: only the row rule below opens rows.
 

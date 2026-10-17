@@ -6,10 +6,10 @@ local VERSION = "1.1.1"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
--- The plan is a level 60 character: one point per level from 10 through 60.
-local MAX_LEVEL = 60
-local FIRST_TALENT_LEVEL = 10
-local PLAN_BUDGET = MAX_LEVEL - FIRST_TALENT_LEVEL + 1
+-- The plan is a character at the game's top level: one point per level from the first talent
+-- level through it. Read from the game at load (ReadLevels), so a raised level cap follows.
+-- Forever: 60 and 10, so 51 points (/dump in game, 2026-10-17).
+local MAX_LEVEL, FIRST_TALENT_LEVEL, PLAN_BUDGET
 -- Row 1 of a tree is open. Every row after it needs this many more points spent in the
 -- rows above it, in that same tree. A fixed rule, not read from the client.
 local POINTS_PER_ROW = 5
@@ -2188,7 +2188,7 @@ end
 local FIT_REASONS = {
 	tree = "no longer in the tree",
 	max = "max rank lowered",
-	budget = "over " .. PLAN_BUDGET .. " points",
+	budget = "over %d points",
 	requirements = "row or arrow requirement no longer met",
 }
 local MAX_LISTED_CHANGES = 3
@@ -2200,7 +2200,7 @@ end
 local function DescribeChange(frame, change)
 	local reasonTexts = {}
 	for index, reason in ipairs(change.reasons) do
-		reasonTexts[index] = FIT_REASONS[reason]
+		reasonTexts[index] = FIT_REASONS[reason]:format(PLAN_BUDGET)
 	end
 	local newName = change.newEntryID and TalentText(frame, change.nodeID, change.newEntryID, "a talent")
 	if change.newEntryID and change.to == change.from then
@@ -2991,9 +2991,11 @@ local function HasTables(owner, names)
 	return true
 end
 
--- At login: what the plan reads the tree with.
+-- At login: the game's levels and what the plan reads the tree with.
 local function HasLoginPieces()
-	return type(REQUIRED_EDGE) == "number" and type(SUFFICIENT_EDGE) == "number" and type(EXCLUSIVE_EDGE) == "number"
+	return HasFunctions(_G, { "GetMaxLevelForPlayerExpansion" }) and HasTables(Constants, { "LevelConstsExposed" })
+		and type(Constants.LevelConstsExposed.MIN_TALENT_LEVEL) == "number"
+		and type(REQUIRED_EDGE) == "number" and type(SUFFICIENT_EDGE) == "number" and type(EXCLUSIVE_EDGE) == "number"
 		and HasTables(Enum, { "TraitNodeType", "TraitEdgeVisualStyle" })
 		and HasFunctions(C_AddOns, { "IsAddOnLoaded" })
 		and HasFunctions(C_SpecializationInfo, { "GetCombatConfigIDForSpecGroup", "GetActiveSpecGroup" })
@@ -3074,6 +3076,9 @@ events:SetScript("OnEvent", Guard(function(_, event, ...)
 				SayGameChanged("the game")
 				return
 			end
+			MAX_LEVEL = GetMaxLevelForPlayerExpansion()
+			FIRST_TALENT_LEVEL = Constants.LevelConstsExposed.MIN_TALENT_LEVEL
+			PLAN_BUDGET = MAX_LEVEL - FIRST_TALENT_LEVEL + 1
 			NormalizeSaved()
 			if select(2, C_AddOns.IsAddOnLoaded(TALENT_UI)) then
 				InstallTalentWindow()

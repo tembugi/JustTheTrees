@@ -93,8 +93,15 @@ Test("the version matches the .toc", function()
 	Equal(VERSION, toc:match("## Version: (%S+)"), "VERSION")
 end)
 
-Test("the budget is one point per level from 10 to 60", function()
-	Equal(SOURCE:match("\nlocal MAX_LEVEL = (%d+)") - SOURCE:match("\nlocal FIRST_TALENT_LEVEL = (%d+)") + 1, PLAN_BUDGET, "budget")
+Test("the budget is one point per level from the game's first talent level to its top level", function()
+	local game = NewGame()
+	game:OpenPlan()
+	Equal(game:Unspent(), tostring(PLAN_BUDGET), "points at level 60")
+	game = NewGame({ maxLevel = 70 })
+	game:OpenPlan()
+	Equal(game:Unspent(), "61", "points if the level cap were 70")
+	game:ClickTimes(3001, 1) -- C1 of the stand-in's tree, named further down
+	Equal(game:LevelRequired(), "Level required: 10", "level after one point")
 end)
 
 Test("a first load starts empty", function()

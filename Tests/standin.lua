@@ -970,6 +970,12 @@ return function(options)
 	function UnitClass()
 		return "Paladin", "PALADIN", 2
 	end
+	-- The game's levels: 60 and 10 in Forever (a /dump in game; MIN_TALENT_LEVEL is in
+	-- LevelConstantsDocumentation.lua). A test can raise the level cap.
+	function GetMaxLevelForPlayerExpansion()
+		return options.maxLevel or 60
+	end
+	Constants = { LevelConstsExposed = { MIN_TALENT_LEVEL = 10 } }
 	TALENT_FRAME_APPLY_BUTTON_TEXT = "Apply Changes"
 	TALENT_FRAME_DISCARD_CHANGES_BUTTON_TOOLTIP = "Undo Pending Changes"
 	function PlaySound(soundKit)
