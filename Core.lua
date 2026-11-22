@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Keep equal to ## Version in the .toc. The game reads the .toc only at client start,
 -- so the in-game label uses this, which /reload picks up.
-local VERSION = "1.1.1"
+local VERSION = "1.1.2"
 -- The addon's name as the player sees it: the tab, the title on the points row and chat.
 local ADDON_TITLE = "Just the Trees"
 
@@ -36,8 +36,9 @@ local OnColorBlindMode
 
 -- The saved layout's version. Raise it only when a change stores plans differently,
 -- and convert the older layout in NormalizeSaved. Saves without a format already
--- use format 1's layout.
-local SAVE_FORMAT = 1
+-- use format 1's layout. Format 1 keyed characters by "name-realm"; format 2 by name
+-- alone, since WoW Forever has no realms (GetRealmName() is empty in game, 2026-11-22).
+local SAVE_FORMAT = 2
 
 local function WholeNumber(value, low, high)
 	return type(value) == "number" and value % 1 == 0 and value >= low and value <= high
@@ -74,10 +75,18 @@ local function CleanPlan(plan)
 	return { nodes = nodes }
 end
 
+-- A format 1 key ("name-realm") as the character's name. Character names never hold "-".
+local function NameFromOldKey(key)
+	return key:match("^([^-]+)%-") or key
+end
+
 -- Runs on every load. Rebuilds JustTheTreesDB from the fields the addon uses:
 -- the save format, and per character the Primary (build) and Secondary plans.
 -- Anything else, left by older versions or damaged, is dropped.
 -- A new saved field has to be added here too, or it is dropped on the next load.
+-- Format 1 saves (or none) are keyed "name-realm": each becomes the name alone. If two
+-- keys end up with the same name, a key that was already the name alone goes first, then
+-- the rest in sorted order, each filling only the plans still missing.
 local function NormalizeSaved()
 	local old = JustTheTreesDB
 	local clean = {
@@ -85,15 +94,32 @@ local function NormalizeSaved()
 		characters = {},
 	}
 	if type(old) == "table" and type(old.characters) == "table" then
-		for key, record in pairs(old.characters) do
-			if type(key) == "string" and key ~= "" and type(record) == "table" then
+		local convert = old.format ~= SAVE_FORMAT
+		local keys = {}
+		for key in pairs(old.characters) do
+			if type(key) == "string" and key ~= "" then
+				keys[#keys + 1] = key
+			end
+		end
+		table.sort(keys, function(left, right)
+			local leftPlain = not left:find("-", 1, true)
+			local rightPlain = not right:find("-", 1, true)
+			if leftPlain ~= rightPlain then
+				return leftPlain
+			end
+			return left < right
+		end)
+		for _, key in ipairs(keys) do
+			local record = old.characters[key]
+			local name = convert and NameFromOldKey(key) or key
+			if type(record) == "table" then
 				local build = CleanPlan(record.build)
 				local secondary = CleanPlan(record.secondary)
 				if build or secondary then
-					clean.characters[key] = {
-						build = build,
-						secondary = secondary,
-					}
+					local kept = clean.characters[name] or {}
+					kept.build = kept.build or build
+					kept.secondary = kept.secondary or secondary
+					clean.characters[name] = kept
 				end
 			end
 		end
@@ -101,16 +127,13 @@ local function NormalizeSaved()
 	JustTheTreesDB = clean
 end
 
+-- WoW Forever has no realms, so a character is its name.
 local function CharacterKey()
 	local name = UnitName("player")
 	if type(name) ~= "string" or name == "" or name == UNKNOWNOBJECT then
 		return nil
 	end
-	local realm = GetRealmName()
-	if type(realm) ~= "string" or realm == "" then
-		return name
-	end
-	return name .. "-" .. realm
+	return name
 end
 
 local function SlotText(slot)

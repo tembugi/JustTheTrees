@@ -1,4 +1,3 @@
-## v1.1.1
+## v1.1.2
 
-- Fixed an issue where a few talents needed more points in the plan than in the talent window.
-- The plan's point budget follows the game's level cap.
+- Fixed an issue where saved plans were missing after the game update.

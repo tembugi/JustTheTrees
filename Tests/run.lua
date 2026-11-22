@@ -105,37 +105,63 @@ Test("the budget is one point per level from the game's first talent level to it
 end)
 
 Test("a first load starts empty", function()
-	Same(Load(nil), { format = 1, characters = {} }, "no saves")
-	Same(Load("damaged"), { format = 1, characters = {} }, "not a table")
-	Same(Load({ characters = "damaged" }), { format = 1, characters = {} }, "characters not a table")
+	Same(Load(nil), { format = 2, characters = {} }, "no saves")
+	Same(Load("damaged"), { format = 2, characters = {} }, "not a table")
+	Same(Load({ characters = "damaged" }), { format = 2, characters = {} }, "characters not a table")
 end)
 
 Test("valid plans are kept as they are", function()
 	local saved = {
-		format = 1,
+		format = 2,
 		characters = {
-			["Ana-Realm"] = { build = Plan(Node(101, 5, 2001), Node(102, 1, 0)), secondary = Plan(Node(201, 3, 0)) },
-			["Bo-Realm"] = { build = Plan(Node(101, PLAN_BUDGET, 0)) },
+			Ana = { build = Plan(Node(101, 5, 2001), Node(102, 1, 0)), secondary = Plan(Node(201, 3, 0)) },
+			Bo = { build = Plan(Node(101, PLAN_BUDGET, 0)) },
 		},
 	}
 	Same(Load(saved), saved, "save")
 end)
 
-Test("a save from before the format number keeps its plans", function()
-	Same(Load({ characters = { ["Ana-Realm"] = { build = Plan(Node(101, 2, 0)) } } }), { format = 1, characters = { ["Ana-Realm"] = { build = Plan(Node(101, 2, 0)) } } }, "save")
+Test("a format 1 save keyed by name and realm is keyed by name", function()
+	local saved = {
+		format = 1,
+		characters = {
+			["Ana-Realm"] = { build = Plan(Node(101, 5, 2001)), secondary = Plan(Node(201, 3, 0)) },
+			["Bo-Some Realm 2 PvP"] = { build = Plan(Node(102, 1, 0)) },
+		},
+	}
+	Same(Load(saved), { format = 2, characters = {
+		Ana = { build = Plan(Node(101, 5, 2001)), secondary = Plan(Node(201, 3, 0)) },
+		Bo = { build = Plan(Node(102, 1, 0)) },
+	} }, "save")
+end)
+
+Test("a save from before the format number keeps its plans, keyed by name", function()
+	Same(Load({ characters = { ["Ana-Realm"] = { build = Plan(Node(101, 2, 0)) } } }), { format = 2, characters = { Ana = { build = Plan(Node(101, 2, 0)) } } }, "save")
+end)
+
+Test("format 1 keys with the same name: a name-only key first, then sorted, each filling missing plans", function()
+	local saved = {
+		format = 1,
+		characters = {
+			["Ana-B Realm"] = { build = Plan(Node(103, 1, 0)), secondary = Plan(Node(203, 1, 0)) },
+			["Ana-A Realm"] = { build = Plan(Node(102, 1, 0)) },
+			Ana = { secondary = Plan(Node(201, 1, 0)) },
+		},
+	}
+	Same(Load(saved), { format = 2, characters = { Ana = { build = Plan(Node(102, 1, 0)), secondary = Plan(Node(201, 1, 0)) } } }, "save")
 end)
 
 Test("an empty saved plan stays saved", function()
-	Same(Load({ format = 1, characters = { ["Ana-Realm"] = { secondary = Plan() } } }), { format = 1, characters = { ["Ana-Realm"] = { secondary = Plan() } } }, "save")
+	Same(Load({ format = 2, characters = { Ana = { secondary = Plan() } } }), { format = 2, characters = { Ana = { secondary = Plan() } } }, "save")
 end)
 
 Test("fields the addon doesn't use are dropped", function()
 	local saved = {
-		format = 1,
+		format = 2,
 		version = "0.4.0",
 		plans = { 1, 2 },
 		characters = {
-			["Ana-Realm"] = {
+			Ana = {
 				build = { nodes = { { nodeID = 101, ranks = 2, entryID = 0, spent = 2 } }, specID = 71 },
 				secondary = Plan(Node(201, 1, 0)),
 				spec = 1,
@@ -143,14 +169,14 @@ Test("fields the addon doesn't use are dropped", function()
 			},
 		},
 	}
-	Same(Load(saved), { format = 1, characters = { ["Ana-Realm"] = { build = Plan(Node(101, 2, 0)), secondary = Plan(Node(201, 1, 0)) } } }, "save")
+	Same(Load(saved), { format = 2, characters = { Ana = { build = Plan(Node(101, 2, 0)), secondary = Plan(Node(201, 1, 0)) } } }, "save")
 end)
 
 Test("damaged talents are dropped, the rest of the plan is kept", function()
 	local saved = {
-		format = 1,
+		format = 2,
 		characters = {
-			["Ana-Realm"] = {
+			Ana = {
 				build = Plan(
 					Node(101, 2, 0),
 					"damaged",
@@ -170,21 +196,21 @@ Test("damaged talents are dropped, the rest of the plan is kept", function()
 			},
 		},
 	}
-	Same(Load(saved), { format = 1, characters = { ["Ana-Realm"] = { build = Plan(Node(101, 2, 0), Node(107, 1, 0), Node(108, 1, 0), Node(109, 1, 0)) } } }, "save")
+	Same(Load(saved), { format = 2, characters = { Ana = { build = Plan(Node(101, 2, 0), Node(107, 1, 0), Node(108, 1, 0), Node(109, 1, 0)) } } }, "save")
 end)
 
 Test("damaged characters and plans are dropped", function()
 	local saved = {
-		format = 1,
+		format = 2,
 		characters = {
 			[""] = { build = Plan(Node(101, 1, 0)) },
 			[7] = { build = Plan(Node(101, 1, 0)) },
-			["Ana-Realm"] = "damaged",
-			["Bo-Realm"] = { build = "damaged", secondary = { nodes = "damaged" } },
-			["Cy-Realm"] = { build = { talents = {} }, secondary = Plan(Node(201, 1, 0)) },
+			Ana = "damaged",
+			Bo = { build = "damaged", secondary = { nodes = "damaged" } },
+			Cy = { build = { talents = {} }, secondary = Plan(Node(201, 1, 0)) },
 		},
 	}
-	Same(Load(saved), { format = 1, characters = { ["Cy-Realm"] = { secondary = Plan(Node(201, 1, 0)) } } }, "save")
+	Same(Load(saved), { format = 2, characters = { Cy = { secondary = Plan(Node(201, 1, 0)) } } }, "save")
 end)
 
 Test("cleaning a clean save changes nothing", function()
@@ -569,7 +595,7 @@ Test("Apply Changes keeps the plan, the undo arrow puts it back, the reset arrow
 	Equal(game:PressPlanButton("Save"), true, "Apply Changes")
 	Equal(game.sounds[#game.sounds], SOUNDKIT.UI_CLASS_TALENT_APPLY_CHANGES, "the game's apply sound")
 	Equal(LastChat(game):find("Primary plan saved (3/51 points).", 1, true) ~= nil, true, "chat after Apply Changes")
-	Equal(Dump(JustTheTreesDB.characters["Ana-Realm"].build), Dump({ nodes = { { nodeID = A1, ranks = 3, entryID = 10010 } } }), "saved plan")
+	Equal(Dump(JustTheTreesDB.characters.Ana.build), Dump({ nodes = { { nodeID = A1, ranks = 3, entryID = 10010 } } }), "saved plan")
 	Equal(apply:IsEnabled(), false, "Apply Changes when nothing changed")
 	Equal(apply.YellowGlow:IsShown(), false, "no glow when nothing changed")
 	Equal(undo:IsShown(), false, "no undo arrow when nothing changed")
@@ -579,7 +605,7 @@ Test("Apply Changes keeps the plan, the undo arrow puts it back, the reset arrow
 	Equal(LastChat(game):find("Unsaved changes were discarded.", 1, true) ~= nil, true, "chat after the undo arrow")
 	game:PressPlanButton("Clear")
 	Equal(game:Spent(), 0, "points after the reset arrow")
-	Equal(JustTheTreesDB.characters["Ana-Realm"].build.nodes[1].ranks, 3, "saved plan after the reset arrow")
+	Equal(JustTheTreesDB.characters.Ana.build.nodes[1].ranks, 3, "saved plan after the reset arrow")
 	game:PressPlanButton("Load")
 	Equal(game:Ranks(A1), 3, "the undo arrow after the reset arrow")
 end)
@@ -650,7 +676,7 @@ Test("Primary and Secondary are separate plans, and each keeps its unsaved edits
 	Equal(game:Ranks(A1) .. " " .. game:Ranks(C1), "2 0", "Primary's unsaved edits")
 	game:PickSlot(2)
 	Equal(game:Ranks(A1) .. " " .. game:Ranks(C1), "0 4", "Secondary")
-	Equal(JustTheTreesDB.characters["Ana-Realm"].build, nil, "Primary never saved")
+	Equal(JustTheTreesDB.characters.Ana.build, nil, "Primary never saved")
 end)
 
 Test("a saved plan comes back after /reload", function()
@@ -664,8 +690,15 @@ Test("a saved plan comes back after /reload", function()
 	Equal(game.frame.calculatorSaveButton:IsEnabled(), false, "Save after /reload")
 end)
 
+Test("a plan saved under name and realm shows on the tree", function()
+	local game = NewGame({ saved = { format = 1, characters = { ["Ana-CAMWOW EU4 Realm 2 PvP"] = { build = Plan(Node(A1, 3, 10010)) } } } })
+	game:OpenPlan()
+	Equal(game:Ranks(A1), 3, "plan")
+	Equal(game.frame.calculatorSaveButton:IsEnabled(), false, "Save")
+end)
+
 Test("a saved plan that no longer fits the tree is fitted, and chat says how", function()
-	local saved = { format = 1, characters = { ["Ana-Realm"] = { build = { nodes = {
+	local saved = { format = 2, characters = { Ana = { build = { nodes = {
 		{ nodeID = A1, ranks = 7, entryID = 10010 }, -- over A1's 5 ranks
 		{ nodeID = A2, ranks = 5, entryID = 10020 },
 		{ nodeID = A8, ranks = 1, entryID = 99999 }, -- a choice the talent no longer has, on a locked row

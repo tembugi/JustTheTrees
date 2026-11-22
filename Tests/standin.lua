@@ -762,8 +762,9 @@ return function(options)
 	function UnitName()
 		return options.playerName or "Ana"
 	end
+	-- WoW Forever has no realms: empty in game (2026-11-22).
 	function GetRealmName()
-		return "Realm"
+		return ""
 	end
 	function GetNumSpecGroups()
 		return 2
