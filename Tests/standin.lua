@@ -762,6 +762,13 @@ return function(options)
 	function UnitName()
 		return options.playerName or "Ana"
 	end
+	-- ASSUMED: a made-up GUID in the game's "Player-<server>-<id>" shape; the addon only
+	-- uses it as a key.
+	function UnitGUID(unit)
+		if unit == "player" then
+			return options.playerGUID or "Player-1-0000000A"
+		end
+	end
 	-- WoW Forever has no realms: empty in game (2026-11-22).
 	function GetRealmName()
 		return ""

@@ -36,9 +36,12 @@ local OnColorBlindMode
 
 -- The saved layout's version. Raise it only when a change stores plans differently,
 -- and convert the older layout in NormalizeSaved. Saves without a format already
--- use format 1's layout. Format 1 keyed characters by "name-realm"; format 2 by name
--- alone, since WoW Forever has no realms (GetRealmName() is empty in game, 2026-11-22).
-local SAVE_FORMAT = 2
+-- use format 1's layout. Format 1 keyed characters by "name-realm", and format 2 (never
+-- published) by name. Format 3 keys them by the character's GUID: WoW Forever has no
+-- realms (GetRealmName() is empty in game, 2026-11-22) but has rulesets, so a name may
+-- not be one character. Older plans wait in "unclaimed" under their old key until their
+-- character opens the plan (ClaimOldPlan).
+local SAVE_FORMAT = 3
 
 local function WholeNumber(value, low, high)
 	return type(value) == "number" and value % 1 == 0 and value >= low and value <= high
@@ -75,65 +78,93 @@ local function CleanPlan(plan)
 	return { nodes = nodes }
 end
 
--- A format 1 key ("name-realm") as the character's name. Character names never hold "-".
+-- An old key ("name-realm" or "name") as the character's name. Names never hold "-".
 local function NameFromOldKey(key)
 	return key:match("^([^-]+)%-") or key
 end
 
+-- The character's two plans, or nil when both are missing or damaged.
+local function CleanRecord(record)
+	if type(record) ~= "table" then
+		return nil
+	end
+	local build = CleanPlan(record.build)
+	local secondary = CleanPlan(record.secondary)
+	if not build and not secondary then
+		return nil
+	end
+	return {
+		build = build,
+		secondary = secondary,
+	}
+end
+
+-- Copies the records of a saved list of characters, keyed by a non-empty string, into into.
+local function CleanRecords(records, into)
+	if type(records) ~= "table" then
+		return
+	end
+	for key, record in pairs(records) do
+		local clean = type(key) == "string" and key ~= "" and CleanRecord(record)
+		if clean then
+			into[key] = clean
+		end
+	end
+end
+
 -- Runs on every load. Rebuilds JustTheTreesDB from the fields the addon uses:
--- the save format, and per character the Primary (build) and Secondary plans.
+-- the save format, per character (by GUID) the Primary (build) and Secondary plans,
+-- and the unclaimed plans of older formats under their old keys.
 -- Anything else, left by older versions or damaged, is dropped.
 -- A new saved field has to be added here too, or it is dropped on the next load.
--- Format 1 saves (or none) are keyed "name-realm": each becomes the name alone. If two
--- keys end up with the same name, a key that was already the name alone goes first, then
--- the rest in sorted order, each filling only the plans still missing.
 local function NormalizeSaved()
 	local old = JustTheTreesDB
 	local clean = {
 		format = SAVE_FORMAT,
 		characters = {},
+		unclaimed = {},
 	}
-	if type(old) == "table" and type(old.characters) == "table" then
-		local convert = old.format ~= SAVE_FORMAT
-		local keys = {}
-		for key in pairs(old.characters) do
-			if type(key) == "string" and key ~= "" then
-				keys[#keys + 1] = key
-			end
-		end
-		table.sort(keys, function(left, right)
-			local leftPlain = not left:find("-", 1, true)
-			local rightPlain = not right:find("-", 1, true)
-			if leftPlain ~= rightPlain then
-				return leftPlain
-			end
-			return left < right
-		end)
-		for _, key in ipairs(keys) do
-			local record = old.characters[key]
-			local name = convert and NameFromOldKey(key) or key
-			if type(record) == "table" then
-				local build = CleanPlan(record.build)
-				local secondary = CleanPlan(record.secondary)
-				if build or secondary then
-					local kept = clean.characters[name] or {}
-					kept.build = kept.build or build
-					kept.secondary = kept.secondary or secondary
-					clean.characters[name] = kept
-				end
-			end
+	if type(old) == "table" then
+		if old.format == SAVE_FORMAT then
+			CleanRecords(old.characters, clean.characters)
+			CleanRecords(old.unclaimed, clean.unclaimed)
+		else
+			CleanRecords(old.characters, clean.unclaimed)
 		end
 	end
 	JustTheTreesDB = clean
 end
 
--- WoW Forever has no realms, so a character is its name.
+-- Gives the character an older plan saved under its name (format 1 or 2), the first such
+-- key in sorted order, when the character has no plans of its own yet.
+local function ClaimOldPlan(key, name)
+	if JustTheTreesDB.characters[key] then
+		return
+	end
+	local found
+	for oldKey in pairs(JustTheTreesDB.unclaimed) do
+		if NameFromOldKey(oldKey) == name and (not found or oldKey < found) then
+			found = oldKey
+		end
+	end
+	if found then
+		JustTheTreesDB.characters[key] = JustTheTreesDB.unclaimed[found]
+		JustTheTreesDB.unclaimed[found] = nil
+	end
+end
+
+-- The character's GUID: one character, whatever its name or ruleset. Nil while the
+-- game doesn't give it (right after login, or if it is secret).
 local function CharacterKey()
+	local guid = UnitGUID("player")
 	local name = UnitName("player")
-	if type(name) ~= "string" or name == "" or name == UNKNOWNOBJECT then
+	if type(guid) ~= "string" or (issecretvalue and issecretvalue(guid)) or guid == "" then
 		return nil
 	end
-	return name
+	if type(name) == "string" and not (issecretvalue and issecretvalue(name)) and name ~= "" and name ~= UNKNOWNOBJECT then
+		ClaimOldPlan(guid, name)
+	end
+	return guid
 end
 
 local function SlotText(slot)
@@ -2558,7 +2589,7 @@ end
 
 local function SaveBuild(frame)
 	local build = SaveSlot(ns.slot or 1, true)
-	-- Plans are saved per character, and the name can be missing right after login.
+	-- Plans are saved per character, and its GUID can be missing right after login.
 	if not build then
 		SayFailed("Couldn't save: your character isn't fully loaded yet. Try again in a moment.")
 		return
